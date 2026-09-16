@@ -136,6 +136,19 @@ def test_cross_entropy_survives_huge_logits():
         f"adding 1e4 to every logit changed the loss from {base:.9f} to {offset:.9f}; "
         "cross-entropy is shift-invariant, so this is a stability bug"
     )
+    # A confidently WRONG prediction: the target's probability is exp(-1000), which is 0.0 in
+    # float64. logsumexp survives it; forming the probability first and taking its log does not.
+    surprise = lesson.cross_entropy(np.array([[[0.0, 1000.0]]]), np.array([[0]]))
+    assert np.isfinite(surprise), (
+        f"a target whose probability underflows to 0 scored {surprise}; you formed the "
+        "probability with softmax and then took its log. log(0) is -inf however carefully "
+        "the softmax itself was computed. Subtract the chosen LOGIT from logsumexp instead — "
+        "the probability is never built, so there is nothing to underflow."
+    )
+    assert abs(surprise - 1000.0) < 1e-6, (
+        f"logits [0, 1000] with target 0 must score logsumexp - logit[0] = 1000.0 nats, "
+        f"got {surprise:.6f}"
+    )
 
 
 # --- exercise 3: attention_forward ----------------------------------------------------------
@@ -156,6 +169,30 @@ def test_attention_cache_contract():
     assert np.asarray(cache["A"]).shape == (b, t, t), "cache['A'] must be (B, T, T)"
     assert abs(float(cache["scale"]) - 1.0 / np.sqrt(d)) < 1e-12, (
         f"scale {cache['scale']} should be 1/sqrt({d}); read D from x.shape[-1]"
+    )
+    # The keys are a contract, so their CONTENTS are checked too: exercise 5 and the model's
+    # backward pass read them by name, and a correctly-shaped cache under the wrong labels
+    # produces a forward pass that looks perfect and gradients that are silently wrong.
+    for key, want in (("X", x), ("Wq", wq), ("Wk", wk), ("Wv", wv)):
+        assert np.allclose(np.asarray(cache[key]), want, atol=1e-12), (
+            f"cache[{key!r}] is not the {key} array you were handed; store the inputs "
+            "themselves, unmodified"
+        )
+    for key, want in (("Q", x @ wq), ("K", x @ wk), ("V", x @ wv)):
+        assert np.allclose(np.asarray(cache[key]), want, atol=1e-11), (
+            f"cache[{key!r}] is not X @ W{key.lower()}. If Q and K are each other's, the "
+            "forward pass is unaffected — Q@K^T is symmetric in which is which — but "
+            "exercise 5 reads them by name and every query/key gradient comes out wrong."
+        )
+    got_mask = np.asarray(cache["mask"])
+    assert got_mask.shape == (t, t) and got_mask.dtype == np.bool_, (
+        f"cache['mask'] is shape {got_mask.shape} of dtype {got_mask.dtype}, expected a "
+        f"({t}, {t}) boolean array. Exercise 5 indexes this to kill the gradient on masked "
+        "scores, so store the mask itself — not None, not the already-masked scores."
+    )
+    assert (got_mask == np.tril(np.ones((t, t), dtype=bool))).all(), (
+        "cache['mask'] is not the lower triangle including the diagonal. True must mean "
+        "'position i MAY attend to position j', so row i is True in columns 0..i."
     )
 
 
@@ -332,6 +369,29 @@ def test_make_batch_covers_corpus_and_stays_in_range():
             f"len(data) - context_len - 1 leaves no legal start at all here"
         )
         assert ys.max() <= 19, "a target ran past the end of the corpus"
+
+    # The tight case above only catches a too-small upper bound when it leaves NO legal start,
+    # which raises. A bound that is merely one short still runs — it just never draws the last
+    # window. On arange the start position is xb[:, 0], so measure the reach directly: with 12
+    # characters and context_len 10 the legal starts are exactly {0, 1}.
+    span, ctx = np.arange(12), 10
+    reach = set()
+    cov_rng = np.random.default_rng(77)
+    for _ in range(60):
+        xs, ys = lesson.make_batch(span, 4, ctx, cov_rng)
+        assert xs.shape == (4, ctx) and ys.shape == (4, ctx), (
+            f"shapes {xs.shape} and {ys.shape} on a 12-character corpus with context_len "
+            f"{ctx}; an upper bound of len(data) can slice a short final window"
+        )
+        reach.update(int(row[0]) for row in xs)
+    assert reach == {0, 1}, (
+        f"over 240 draws the start positions seen were {sorted(reach)}, but on a "
+        f"{len(span)}-character corpus with context_len {ctx} both 0 and 1 are legal and "
+        f"{len(span) - ctx - 1} is the LAST legal start. Missing it means the upper bound is "
+        "one too small: rng.integers is exclusive at the top already, so subtracting a "
+        "further 1 silently throws away the final window. Extra values mean the bound is too "
+        "large and some target window ran short."
+    )
 
 
 RUBRIC = [

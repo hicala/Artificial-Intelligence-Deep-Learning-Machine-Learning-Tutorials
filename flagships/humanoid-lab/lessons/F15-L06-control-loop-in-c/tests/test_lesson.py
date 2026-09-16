@@ -160,6 +160,19 @@ def test_pd_ctrl_clamps_to_each_actuators_own_range():
     assert block[0][3] != block[1][3], (
         "the shipped model should give the two actuators different ranges, or this test "
         "proves nothing")
+    # An UNLIMITED actuator must not be clamped at all. Both shipped models limit both
+    # actuators, so without --unlimited (which clears the flag on the loaded model) a law
+    # that clamps unconditionally behaves identically to a correct one and no check in this
+    # lesson can tell them apart.
+    free = lesson.rows(lesson.run_c(
+        "ctrldump", "--model", lesson.MODEL_REL, "--kp", "40", "--kd", "3",
+        "--target", "0.8,-1.2", "--unlimited"), "ctrl")
+    assert len(free) == 2, f"ctrldump --unlimited printed {len(free)} rows, expected 2"
+    assert abs(free[0][1] - 32.0) < 1e-9 and abs(free[1][1] - (-48.0)) < 1e-9, (
+        f"with every actuator's ctrllimited flag cleared the law must hand back its RAW "
+        f"commands 40*0.8 = 32 and 40*(-1.2) = -48; you returned {free[0][1]!r} and "
+        f"{free[1][1]!r}. Clamp only when m->actuator_ctrllimited[i] is set — an unlimited "
+        "actuator's ctrlrange is meaningless and clamping to it throttles the controller.")
 
 
 def test_pd_ctrl_arithmetic_and_signs():
@@ -191,6 +204,36 @@ def test_pd_ctrl_arithmetic_and_signs():
     assert abs(neg[0][1] - (-1.0)) < 1e-9, (
         f"sitting 0.1 rad ABOVE target at kp = 10 must give -1.0, not {neg[0][1]!r} — the "
         "command has to push back down")
+
+    # The damping term must read qvel at the DOF address, not at the qpos address. Every case
+    # above runs on the pinned arm, where the two agree, so `d->qvel[qadr]` passes all of
+    # them — the exact bug this lesson exists to prevent. On the floating arm the shoulder's
+    # qpos address is 7 and its dof address 6, and qvel[7] is the ELBOW's velocity. Both
+    # hinges are put exactly on target here, so the kp term is zero and the command IS the
+    # damping term. Only actuator 0 is asserted against the wrong-address value in the hint:
+    # for actuator 1 the qpos address is 8 against nv = 8, so the wrong read runs off the end
+    # of the array and its value is undefined — what is asserted is the correct answer.
+    fm = mujoco.MjModel.from_xml_path(str(lesson.FLOATING_PATH))
+    j0 = int(fm.actuator_trnid[0, 0])
+    q0, v0 = int(fm.jnt_qposadr[j0]), int(fm.jnt_dofadr[j0])
+    assert q0 != v0, (
+        "the floating model must give actuator 0 two different addresses, or this case "
+        "proves nothing")
+    onfloat = lesson.rows(lesson.run_c(
+        "ctrldump", "--model", lesson.FLOATING_REL, "--kp", "10", "--kd", "2",
+        "--target", "0.8,-1.2", "--qpos", "0,0,0.8,1,0,0,0,0.8,-1.2",
+        "--qvel", "0,0,0,0,0,0,0.1,0.3"), "ctrl")
+    assert len(onfloat) == 2, (
+        f"ctrldump on the floating arm printed {len(onfloat)} rows, expected 2")
+    assert abs(onfloat[0][1] - (-0.2)) < 1e-9, (
+        f"on the floating arm, with both hinges exactly on target, the shoulder's own "
+        f"velocity is qvel[{v0}] = 0.1 rad/s, so at kd = 2 the command is -0.2; you returned "
+        f"{onfloat[0][1]!r}. Reading qvel[{q0}] — the QPOS address — picks up the elbow's "
+        "0.3 rad/s and gives -0.6 instead. The damping term must index qvel with the address "
+        "from jnt_dofadr.")
+    assert abs(onfloat[1][1] - (-0.6)) < 1e-9, (
+        f"the elbow's own velocity is qvel[{int(fm.jnt_dofadr[int(fm.actuator_trnid[1, 0])])}]"
+        f" = 0.3 rad/s, so at kd = 2 its command is -0.6; you returned {onfloat[1][1]!r}")
 
 
 def test_run_loop_steps_exactly_once_per_tick():
@@ -329,8 +372,8 @@ RUBRIC = [
      "clamp with m->actuator_ctrlrange[2*i] and [2*i + 1], per actuator, and only when "
      "m->actuator_ctrllimited[i]"),
     (test_pd_ctrl_arithmetic_and_signs, 5,
-     "kp*(target - qpos) - kd*qvel: the error is target minus position, and the damping "
-     "term is subtracted"),
+     "kp*(target - qpos) - kd*qvel: the error is target minus position, the damping term is "
+     "subtracted, and qvel is indexed by the DOF address rather than the qpos one"),
     (test_run_loop_steps_exactly_once_per_tick, 4,
      "one mj_step per tick, and honour the ticks argument rather than a constant"),
     (test_run_loop_applies_the_control_it_computes, 3,

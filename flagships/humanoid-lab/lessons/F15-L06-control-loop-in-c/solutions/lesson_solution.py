@@ -104,11 +104,18 @@ def rows(text: str, tag: str) -> list:
 
 
 def make_test():
-    """Run `make test` — the C self-test. Returns (exit code, combined output)."""
-    proc = subprocess.run(
-        ["make", "-C", str(LESSON_DIR), f"PYTHON={sys.executable}",
-         f"SRC={C_SRC}", f"BIN={BIN}", "test"],
-        capture_output=True, text=True, timeout=600)
+    """Run the C self-test — what `make test` runs. Returns (exit code, combined output).
+
+    The binary is built with make and then invoked directly, so its OWN exit code survives:
+    make reports any failed recipe as 2, which would make a real failure (the binary's 1)
+    indistinguishable from an unfinished stub (the binary's 2). 0 = all three checks pass,
+    1 = at least one real failure, 2 = at least one exercise is still a stub.
+    """
+    ok, out = build(verbose=False)
+    if not ok:
+        return 1, out
+    proc = subprocess.run([str(LESSON_DIR / BIN), "selftest", "--model", MODEL_REL],
+                          cwd=LESSON_DIR, capture_output=True, text=True, timeout=600)
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 
 
@@ -598,8 +605,8 @@ if __name__ == "__main__":
 #
 # **5 — (c).** Nothing is wrong. A PD law produces torque only in proportion to error, so to
 # hold a gravitational load it must hold a matching error: `error = qfrc_bias / kp`. That is
-# the identity your own run printed, and the ratio column came out at 1.000 to twelve
-# significant figures — which is what rules out (a), a sign error, and (b), incomplete
+# the identity your own run printed, and the ratio column came out at 1.0000 — the two
+# sides agree to better than one part in 10^10 — which is what rules out (a), a sign error, and (b), incomplete
 # convergence: the arm is not still moving toward the target, it has arrived at the only place
 # the law can hold. (d) is unrelated; a smaller timestep integrates the same equilibrium more
 # accurately. The three real fixes are a higher gain (which shrinks the error but never

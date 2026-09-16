@@ -11,6 +11,24 @@ that never resets, a cost of transport missing `g`, and a search that quietly ig
 
 No test asserts a particular gait. The search is graded on the MARGIN it opens over the
 baseline, so a student whose machine finds a different optimum still scores full marks.
+
+Mutation-tested 2026-09-16 against 24 broken copies of the reference solution. Four of them
+scored 100% against the rubric as it then stood, and the four tests that close those holes
+are marked `# mutation fix` below:
+
+  * `gait_targets` hardcoding the antiphase offset instead of using its `leg_phase` argument,
+    and `rollout` never forwarding it — between them these made objective 4 (the phase
+    measurement in section 5) entirely ungraded.
+  * `rollout` looping `HORIZON_STEPS` and ignoring its documented `horizon` argument.
+  * `coordinate_search` always varying `start` rather than the incumbent. On the authoring
+    machine this still cleared the 1.5x margin (2.04x against the reference's 3.03x), so the
+    margin test's own hint was promising a check it did not deliver. It is now graded on a
+    synthetic, deterministic landscape instead of on a hardware-dependent number.
+  * `coordinate_search` ignoring `max_rollouts` and returning `min(used, max_rollouts)`. The
+    cap test trusted the count the search reported; it now counts the rollouts that happen.
+
+Two of those last three swap `lesson.rollout` / `lesson.gait_score` for stand-ins, which is
+why `coordinate_search`'s docstring tells the student to call them by name.
 """
 import importlib.util, math, os
 from pathlib import Path
@@ -85,6 +103,38 @@ def test_gait_targets_knee_never_extends_backwards():
     assert abs(knees.min() + p["knee_amp"]) < 1e-3, (
         f"the deepest knee flexion was {knees.min():+.4f}, but knee_amp = {p['knee_amp']:.4f} "
         "should be reached once per cycle. Check the envelope spans its full range."
+    )
+
+
+def test_gait_targets_uses_the_leg_phase_argument():  # mutation fix
+    """`leg_phase` is an argument, not a constant.
+
+    Hardcoding `LEG_PHASE` inside the body reproduces the reference trajectory exactly at the
+    default, so every other test passes — and section 5, which changes `leg_phase` to make the
+    walker hop, silently measures nothing.
+    """
+    p = {"freq": 1.0, "hip_amp": 0.4, "knee_amp": 0.5, "knee_lag": 0.6, "hip_bias": 0.07}
+    for t in (0.0, 0.17, 0.41, 0.93):
+        both = np.asarray(lesson.gait_targets(t, p, leg_phase=0.0), dtype=float)
+        assert abs(both[0] - both[2]) < 1e-9 and abs(both[1] - both[3]) < 1e-9, (
+            f"at t={t} with leg_phase=0 the two legs must move TOGETHER, but the hips read "
+            f"{both[0]:.4f} and {both[2]:.4f} and the knees {both[1]:.4f} and {both[3]:.4f}. "
+            "You have hardcoded the antiphase offset instead of using the leg_phase argument "
+            "the function was handed — which makes section 5's whole measurement a no-op."
+        )
+    q = math.pi / 2
+    out = np.asarray(lesson.gait_targets(0.3, p, leg_phase=q), dtype=float)
+    phase = 2.0 * math.pi * p["freq"] * 0.3
+    want_hip = p["hip_amp"] * math.sin(phase + q) + p["hip_bias"]
+    want_knee = -p["knee_amp"] * (1.0 - math.cos(phase + q + p["knee_lag"])) / 2.0
+    assert abs(out[2] - want_hip) < 1e-9, (
+        f"with leg_phase=pi/2 the left hip should be {want_hip:.4f}, not {out[2]:.4f}. "
+        "leg_phase is added to the left leg's phase."
+    )
+    assert abs(out[3] - want_knee) < 1e-9, (
+        f"with leg_phase=pi/2 the left knee should be {want_knee:.4f}, not {out[3]:.4f}. "
+        "leg_phase goes inside the left KNEE's cosine too, alongside knee_lag — the whole left "
+        "leg is shifted, not just its hip."
     )
 
 
@@ -169,6 +219,46 @@ def test_rollout_detects_a_fall_and_stops_early():
     )
 
 
+def test_rollout_forwards_the_leg_phase_argument():  # mutation fix
+    """A rollout that drops `leg_phase` on the floor is indistinguishable at the default."""
+    model, data = lesson.load_walker()
+    walk = lesson.rollout(model, data, lesson.BASELINE_GAIT, leg_phase=math.pi)
+    hop = lesson.rollout(model, data, lesson.BASELINE_GAIT, leg_phase=0.0)
+    differs = (abs(walk["distance"] - hop["distance"]) > 1e-9
+               or walk["steps"] != hop["steps"] or walk["fell"] != hop["fell"])
+    assert differs, (
+        "driving both legs in phase (leg_phase=0) produced exactly the same rollout as the "
+        "antiphase walk, down to the last step. rollout takes leg_phase and must hand it on to "
+        "gait_targets — otherwise section 5 changes a number that never reaches the physics."
+    )
+    assert not walk["fell"] and hop["fell"], (
+        f"antiphase fell={walk['fell']} after {walk['steps']} steps, in-phase fell={hop['fell']} "
+        f"after {hop['steps']}. The antiphase gait walks the full horizon and the in-phase one "
+        "topples; the same verdict for both means leg_phase is not reaching gait_targets."
+    )
+
+
+def test_rollout_honours_the_horizon_argument():  # mutation fix
+    """`horizon` is an argument too — F15-L08 re-uses this rollout with a different one."""
+    model, data = lesson.load_walker()
+    short = lesson.rollout(model, data, lesson.BASELINE_GAIT, horizon=120)
+    full = lesson.rollout(model, data, lesson.BASELINE_GAIT)
+    assert short["steps"] == 120, (
+        f"rollout(..., horizon=120) took {short['steps']} steps. Loop over range(horizon), not "
+        "over the module-level HORIZON_STEPS — the argument is there so a caller can ask for a "
+        "shorter episode, and a lesson later in this flagship does exactly that."
+    )
+    assert not short["fell"], (
+        f"the baseline survives its first 120 steps, but the short rollout reported a fall. "
+        "A fall this early means the loop is not starting from the keyframe."
+    )
+    assert short["energy"] < full["energy"] and abs(short["distance"]) < abs(full["distance"]), (
+        f"120 steps cost {short['energy']:.1f} J over {short['distance']:.3f} m while "
+        f"{full['steps']} steps cost {full['energy']:.1f} J over {full['distance']:.3f} m. A "
+        "shorter episode must accumulate strictly less of both."
+    )
+
+
 def test_rollout_resets_between_calls():
     model, data = lesson.load_walker()
     first = lesson.rollout(model, data, lesson.BASELINE_GAIT)
@@ -243,11 +333,90 @@ def test_coordinate_search_beats_the_baseline_by_a_margin():
     )
 
 
-def test_coordinate_search_respects_the_rollout_cap():
-    _, _, n = lesson.coordinate_search(lesson.BASELINE_GAIT, passes=4, max_rollouts=10)
+def test_coordinate_search_carries_each_improvement_forward():  # mutation fix
+    """Each accepted improvement must become the base for the next parameter.
+
+    Graded on a synthetic, deterministic landscape rather than on physics, so it measures the
+    algorithm and not the machine. A search that always varies `start` instead of the incumbent
+    still cleared the margin test's 1.5x threshold on the authoring machine, which is why that
+    threshold is no longer the only thing standing between this mistake and full marks.
+
+    `rollout` and `gait_score` are swapped for stand-ins. The exercise's docstring tells the
+    student to score candidates with `gait_score(rollout(model, data, candidate))`, so an
+    implementation that follows the contract picks these up. The stand-in result is also shaped
+    so that the REAL `gait_score` ranks it identically, in case only one of the two is reached.
+    """
+    target = {"freq": 1.7, "hip_amp": 0.60, "knee_amp": 1.00, "knee_lag": 5.03, "hip_bias": 0.10}
+    start = {"freq": 0.6, "hip_amp": 0.10, "knee_amp": 0.0, "knee_lag": 0.0, "hip_bias": -0.10}
+    for k in lesson.PARAM_KEYS:
+        assert target[k] in lesson.SEARCH_GRID[k] and start[k] in lesson.SEARCH_GRID[k], (
+            f"the grid for {k!r} no longer contains the values this probe needs"
+        )
+    seen = []
+
+    def fake_rollout(model, data, params, *a, **kw):
+        seen.append(dict(params))
+        matched = sum(1 for k in lesson.PARAM_KEYS if params[k] == target[k])
+        # distance rises with matched, energy is fixed: lower cost of transport = better,
+        # under the real gait_score as well as the stand-in below.
+        return {"distance": 1.0 + matched, "energy": 1.0,
+                "steps": lesson.HORIZON_STEPS, "fell": False}
+
+    def fake_score(result):
+        return -float(result["distance"])
+
+    real_rollout, real_score = lesson.rollout, lesson.gait_score
+    lesson.rollout, lesson.gait_score = fake_rollout, fake_score
+    try:
+        best, _, _ = lesson.coordinate_search(start, passes=2)
+    finally:
+        lesson.rollout, lesson.gait_score = real_rollout, real_score
+
+    assert seen, (
+        "the search never called the module-level rollout(). Score each candidate with "
+        "gait_score(rollout(model, data, candidate)), looked up by name at call time, exactly "
+        "as the docstring says — do not capture either one in a default argument."
+    )
+    missed = [k for k in lesson.PARAM_KEYS if best[k] != target[k]]
+    assert not missed, (
+        f"on a landscape where every parameter independently improves the score, the search "
+        f"came back with {sorted(missed)} still at its starting value. That is the signature of "
+        "building each candidate from `start` rather than from the incumbent: only one "
+        "improvement can ever survive. Accept an improvement immediately and tune the NEXT "
+        "parameter against it."
+    )
+
+
+def test_coordinate_search_respects_the_rollout_cap():  # mutation fix (counts, not self-report)
+    """The cap is graded on the rollouts that happen, not on the number the search reports."""
+    real_rollout = lesson.rollout
+    calls = {"n": 0}
+
+    def counting(*a, **kw):
+        calls["n"] += 1
+        return real_rollout(*a, **kw)
+
+    lesson.rollout = counting
+    try:
+        _, _, n = lesson.coordinate_search(lesson.BASELINE_GAIT, passes=4, max_rollouts=10)
+    finally:
+        lesson.rollout = real_rollout
+    assert calls["n"] >= 1, (
+        "the search never called the module-level rollout(). Call it by name so the budget is "
+        "something that can be observed rather than something you assert about yourself."
+    )
+    assert calls["n"] <= 10, (
+        f"the cap was 10 rollouts and the search actually ran {calls['n']} of them (it reported "
+        f"{n}). The budget is the point of this exercise: check it before every rollout and "
+        "stop when it is spent. Reporting a capped count while spending more is not a budget."
+    )
     assert n <= 10, (
-        f"the cap was 10 rollouts and the search ran {n}. The budget is the point of this "
-        "exercise: check it before every rollout and stop when it is spent."
+        f"the cap was 10 rollouts and the search reported {n}. Check the budget before every "
+        "rollout and stop when it is spent."
+    )
+    assert n == calls["n"], (
+        f"the search reported {n} rollouts but ran {calls['n']}. Report what you actually spent "
+        "— the count is how a caller budgets the next search."
     )
 
 
@@ -256,6 +425,8 @@ RUBRIC = [
      "return (hip_r, knee_r, hip_l, knee_l); the left leg's phase is offset by leg_phase"),
     (test_gait_targets_knee_never_extends_backwards, 3,
      "knee = -knee_amp * (1 - cos(phase + knee_lag)) / 2, so it spans -knee_amp..0"),
+    (test_gait_targets_uses_the_leg_phase_argument, 2,
+     "use the leg_phase ARGUMENT, not the LEG_PHASE constant: at 0 both legs move together"),
     (test_gait_targets_bias_moves_hips_only, 2,
      "hip_bias is added to the two hips and to nothing else"),
     (test_gait_targets_uses_knee_lag, 2,
@@ -266,6 +437,10 @@ RUBRIC = [
      "energy += abs(actuator_force * actuator_velocity).sum() * DT, every step"),
     (test_rollout_detects_a_fall_and_stops_early, 2,
      "break when hip height drops below MIN_HIP_HEIGHT or pitch exceeds MAX_PITCH"),
+    (test_rollout_forwards_the_leg_phase_argument, 2,
+     "pass leg_phase through to gait_targets; at 0 the walker hops and topples"),
+    (test_rollout_honours_the_horizon_argument, 2,
+     "loop over range(horizon), not over the module-level HORIZON_STEPS"),
     (test_rollout_resets_between_calls, 2,
      "mj_resetDataKeyframe at the top of every rollout, before the loop"),
     (test_cost_of_transport_formula, 3,
@@ -278,6 +453,8 @@ RUBRIC = [
      "return (best_params, best_score, rollouts_used)"),
     (test_coordinate_search_beats_the_baseline_by_a_margin, 3,
      "accept an improvement immediately and carry it into the next parameter"),
+    (test_coordinate_search_carries_each_improvement_forward, 3,
+     "build each candidate from the incumbent, not from `start`, and accept improvements at once"),
     (test_coordinate_search_respects_the_rollout_cap, 2,
      "check the rollout budget before each rollout and stop when it is spent"),
 ]

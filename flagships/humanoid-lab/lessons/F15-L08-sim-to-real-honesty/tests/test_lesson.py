@@ -8,10 +8,20 @@ the failure modes a plausible-looking wrong implementation has: a latency pipeli
 not start full, noise written into the world rather than the observation, a mass edit that
 compounds, a sampler that reuses one rollout seed, and a requirements check whose VRAM
 comparison is strict when it should not be.
+
+Several cases here exist because a mutation pass found them missing: a loop one step short of
+the horizon, a fall reported one step early, noise that reaches the two angles but not the two
+velocities, a saturation fraction divided by the horizon rather than the steps taken, a fall
+test without `abs()`, a lean accumulated before the step instead of after it, and a mean
+absolute lean passed off as an RMS. Each of those scored 100% against an earlier version of
+this rubric. `_reference_clean_rms` and `_simulated_steps` are what closed them: the first
+recomputes the clean-path RMS from the loop the docstring specifies, the second asks MuJoCo's
+own clock how many steps were really taken.
 """
-import importlib.util, os
+import importlib.util, math, os
 from pathlib import Path
 
+import mujoco
 import numpy as np
 
 # CI grades solutions/lesson_solution.py; a student grades lesson.py. Same rubric, one file.
@@ -27,6 +37,30 @@ def _fresh():
     return lesson.load_balancer()
 
 
+def _simulated_steps(model, data) -> float:
+    """How many steps MuJoCo's own clock says were taken since the keyframe reset."""
+    return data.time / model.opt.timestep
+
+
+def _reference_clean_rms(gains) -> float:
+    """Recompute the clean-path RMS from the loop `rollout`'s docstring specifies.
+
+    No latency, no noise, no parameter edit — so this is fully pinned by the docstring, and
+    any implementation that follows it lands on the same float. It is the only way to tell an
+    RMS from a mean absolute value, or a 500-step loop from a 499-step one, from the outside.
+    """
+    model, data = _fresh()
+    mujoco.mj_resetDataKeyframe(model, data, 0)
+    mujoco.mj_forward(model, data)
+    gain_matrix = np.asarray(gains, dtype=float).reshape(2, 4)
+    squared = 0.0
+    for _ in range(lesson.HORIZON_STEPS):
+        data.ctrl[:] = -gain_matrix @ np.concatenate([data.qpos, data.qvel])
+        mujoco.mj_step(model, data)
+        squared += float(data.qpos[0]) ** 2
+    return math.sqrt(squared / lesson.HORIZON_STEPS)
+
+
 # --- exercise 1: rollout ------------------------------------------------------------------
 
 def test_rollout_shape_and_clean_baseline():
@@ -40,6 +74,21 @@ def test_rollout_shape_and_clean_baseline():
         f"survived but only {r['steps']} steps; a survivor runs the full horizon"
     )
     assert 0.0 < r["rms_lean"] < 0.2, f"rms_lean {r['rms_lean']} is not a plausible RMS angle"
+    # `steps` is a step COUNT, not a label you attach to the result. MuJoCo's clock is the
+    # witness: a loop bound of HORIZON_STEPS - 1 reports 500 and simulates 499.
+    took = _simulated_steps(model, data)
+    assert abs(took - lesson.HORIZON_STEPS) < 1e-6, (
+        f"you reported {r['steps']} steps but data.time says {took:.1f} steps were simulated "
+        f"— the loop must run range({lesson.HORIZON_STEPS}), and `steps` must be the number "
+        "of steps actually taken"
+    )
+    expected = _reference_clean_rms(lesson.BASELINE_GAINS)
+    assert abs(r["rms_lean"] - expected) < 1e-9, (
+        f"rms_lean is {r['rms_lean']:.6f}, and the loop in the docstring gives "
+        f"{expected:.6f}. It is the root MEAN SQUARE of data.qpos[0] read AFTER each "
+        "mj_step: accumulate lean**2 (not abs(lean)) once per step, after stepping and not "
+        "before, then sqrt(total / steps)"
+    )
 
 
 def test_rollout_is_deterministic_and_resets():
@@ -90,6 +139,18 @@ def test_rollout_noise_corrupts_observation_not_state():
         "0.20 rad of sensor noise must topple it; if it survives, the noise is probably being "
         "added to data.qpos (the world) rather than to the controller's observation"
     )
+    # The observation is four numbers, and the noise vector is four numbers. These gains read
+    # the two VELOCITIES only, so a rollout whose noise reaches just the two angles is
+    # bit-for-bit identical to the noise-free one here, and differs nowhere else.
+    velocity_only = np.array([0.0, 0.0, 120.0, 20.0, 0.0, 0.0, 20.0, 60.0])
+    v_clean = lesson.rollout(model, data, velocity_only, noise_std=0.0)
+    v_noisy = lesson.rollout(model, data, velocity_only, noise_std=0.25, seed=7)
+    assert v_noisy != v_clean, (
+        "with gains that read only the two joint VELOCITIES, adding sensor noise changed "
+        f"nothing ({v_clean}) — your noise vector is reaching data.qpos's two angles and not "
+        "the two velocities. It is rng.normal(0.0, noise_std, size=4), added to the whole "
+        "concatenated state"
+    )
 
 
 def test_rollout_saturation_is_measured_on_the_raw_command():
@@ -111,6 +172,40 @@ def test_rollout_saturation_is_measured_on_the_raw_command():
     )
     huge = lesson.rollout(model, data, np.asarray(lesson.BASELINE_GAINS) * 50.0)
     assert huge["saturated_fraction"] > 0.9, "gains 50x larger must saturate almost always"
+
+
+# A gain vector that overshoots and topples the machine BACKWARD, past -FALL_ANGLE, without
+# ever leaning far forward. Found by search over random gains and pinned here: it is the only
+# witness that distinguishes `abs(lean) > FALL_ANGLE` from `lean > FALL_ANGLE`, and every
+# hand-picked controller in this lesson happens to fall forwards.
+BACKWARD_GAINS = np.array([282.8, 215.7, 68.0, 348.7, -326.5, -443.7, -260.0, 36.8])
+
+
+def test_rollout_reports_a_fall_honestly():
+    """A fall must be caught in both directions, counted right, and divided by steps taken."""
+    model, data = _fresh()
+    # Positive feedback: pinned against the limit from the first step, over in a few dozen.
+    runaway = lesson.rollout(model, data, np.asarray(lesson.BASELINE_GAINS) * -5.0)
+    assert not runaway["survived"], "positive feedback must topple it, not balance it"
+    assert runaway["rms_lean"] == float("inf"), (
+        f"a fallen episode reports rms_lean of inf, not {runaway['rms_lean']}"
+    )
+    took = _simulated_steps(model, data)
+    assert abs(took - runaway["steps"]) < 1e-6, (
+        f"you reported {runaway['steps']} steps but MuJoCo took {took:.0f} — the step that "
+        "detected the fall still happened, so it counts: `steps` is step + 1, not step"
+    )
+    assert runaway["saturated_fraction"] == 1.0, (
+        f"this controller asks for far more than 40 N*m on every single step it takes, so "
+        f"saturated_fraction must be exactly 1.0, not {runaway['saturated_fraction']:.3f} — "
+        "divide the saturated steps by the steps TAKEN, not by the full horizon"
+    )
+    backward = lesson.rollout(model, data, BACKWARD_GAINS)
+    assert not backward["survived"] and backward["steps"] < lesson.HORIZON_STEPS, (
+        f"these gains drive the machine over BACKWARDS, past -{lesson.FALL_ANGLE} rad, and "
+        f"your rollout reported {backward} — the fall test is abs(lean) > FALL_ANGLE. "
+        "Falling on your back is still falling"
+    )
 
 
 # --- exercise 2: apply_parameters ---------------------------------------------------------
@@ -205,7 +300,17 @@ def test_sample_conditions_reproducible_and_in_range():
     """A seed must replay exactly, and every draw must respect the spec."""
     a = lesson.sample_conditions(25, seed=11)
     assert len(a) == 25, f"asked for 25, got {len(a)}"
-    assert a == lesson.sample_conditions(25, seed=11), "same seed must reproduce exactly"
+    again = lesson.sample_conditions(25, seed=11)
+    # Check this before comparing contents: a sampler that appends into a list default
+    # argument hands back the SAME object every call, so every comparison below would be
+    # comparing a list with itself and would agree no matter what it contains.
+    assert len(again) == 25 and again is not a, (
+        f"a second call for 25 conditions returned {len(again)} of them"
+        f"{' — and the very same list object' if again is a else ''}. Build a new list "
+        "inside the function; a list you put in the signature as a default is created once, "
+        "at definition time, and shared by every call"
+    )
+    assert a == again, "same seed must reproduce exactly"
     assert a != lesson.sample_conditions(25, seed=12), "different seeds must differ"
     for c in a:
         assert sorted(c) == sorted(lesson.NOMINAL), f"condition keys {sorted(c)}"
@@ -255,6 +360,14 @@ def test_domain_randomisation_narrows_the_held_out_gap():
     model, data = _fresh()
     held_out = lesson.sample_conditions(lesson.HELD_OUT_N, seed=lesson.HELD_OUT_SEED)
     train_dr = lesson.sample_conditions(lesson.DR_TRAIN_N, seed=lesson.DR_TRAIN_SEED)
+    # Check the sizes BEFORE tuning. A sampler that accumulates into a mutable default
+    # argument returns a list that grows with every call, and cem_tune over hundreds of
+    # conditions does not fail — it runs until you give up on it.
+    assert len(held_out) == lesson.HELD_OUT_N and len(train_dr) == lesson.DR_TRAIN_N, (
+        f"asked for {lesson.HELD_OUT_N} and {lesson.DR_TRAIN_N} conditions, got "
+        f"{len(held_out)} and {len(train_dr)} — if these keep growing across calls, your "
+        "sampler is appending into a list default argument, which Python creates ONCE"
+    )
     gains_nominal = lesson.cem_tune([lesson.NOMINAL])
     gains_dr = lesson.cem_tune(train_dr)
     on_nominal = lesson.survival_rate(model, data, gains_nominal, [lesson.NOMINAL])
@@ -328,6 +441,9 @@ RUBRIC = [
      "add noise to the controller's view of the state, never to data.qpos"),
     (test_rollout_saturation_is_measured_on_the_raw_command, 2,
      "compare the command you computed against actuator_ctrlrange, before MuJoCo clamps it"),
+    (test_rollout_reports_a_fall_honestly, 2,
+     "abs(lean) > FALL_ANGLE in either direction; steps is step + 1, and it is also the "
+     "denominator of saturated_fraction"),
     (test_apply_parameters_sets_from_baseline, 3,
      "mass = BASE_TORSO_MASS * scale, never mass *= scale"),
     (test_apply_parameters_sets_friction_and_recomputes_constants, 2,

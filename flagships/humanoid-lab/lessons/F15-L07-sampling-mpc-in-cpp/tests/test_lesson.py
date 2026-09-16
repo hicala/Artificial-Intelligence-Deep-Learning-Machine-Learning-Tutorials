@@ -65,9 +65,13 @@ def _costof(controls) -> dict:
         os.unlink(path)
 
 
-def _refit(costs: str, offset: str = "0", samples: str = "12", horizon: str = "7") -> str:
-    return lesson.run_cpp("refitdump", "--samples", samples, "--horizon", horizon,
-                          "--costs", costs, "--offset", offset)
+def _refit(costs: str, offset: str = "0", samples: str = "12", horizon: str = "7",
+           lam: str | None = None) -> str:
+    args = ["refitdump", "--samples", samples, "--horizon", horizon,
+            "--costs", costs, "--offset", offset]
+    if lam is not None:
+        args += ["--lambda", lam]
+    return lesson.run_cpp(*args)
 
 
 # --------------------------------------------------------------------------------------
@@ -120,6 +124,35 @@ def test_sampling_statistics():
         "--sigma", "0.25", "--offset", "0.1", "--seed", "31415"), "row"))
     assert not np.allclose(block, other), (
         "two different seeds produced the same buffer — the rng is being ignored entirely")
+
+    # Row-major, pinned exactly. 500x9 and 9x500 draw the same 4500 numbers in the same order
+    # from the same seed, and row-major storage writes the k-th draw at index k in both, so the
+    # flattened buffers must match element for element. A transposed layout permutes one of
+    # them and not the other, so this is the check that actually sees out[i*horizon + t].
+    tall = np.array(lesson.rows(lesson.run_cpp(
+        "sampledump", "--samples", "9", "--horizon", "500",
+        "--sigma", "0.25", "--offset", "0.1", "--seed", "2718"), "row"))
+    assert np.array_equal(block.ravel(), tall.ravel()), (
+        "500 samples of a 9-step horizon and 9 samples of a 500-step horizon drew the same "
+        "4500 numbers from the same seed but stored them differently — the control for sample "
+        "i at step t must land at out[i * horizon + t], row-major. out[t * samples + i] "
+        "transposes the buffer, and every row you hand to rollout_cost is then a column")
+
+    # Sigma well past the actuator range: now most draws are outside it, so clamping is not a
+    # detail that a lucky seed can hide.
+    hard = lesson.run_cpp("sampledump", "--samples", "200", "--horizon", "6",
+                          "--sigma", "3.0", "--offset", "0.4", "--seed", "4242")
+    hh = lesson.metrics(hard)
+    hb = np.array(lesson.rows(hard, "row"))
+    assert hb.min() >= hh["lo"] - 1e-12 and hb.max() <= hh["hi"] + 1e-12, (
+        f"at sigma = 3 the samples ran to [{hb.min():.4f}, {hb.max():.4f}] against a ctrlrange "
+        f"of [{hh['lo']}, {hh['hi']}] — clamp the FINAL value, mean[t] + sigma*z, not the noise "
+        "on its own")
+    pinned = float(np.mean((np.abs(hb - hh["lo"]) < 1e-12) | (np.abs(hb - hh["hi"]) < 1e-12)))
+    assert pinned > 0.5, (
+        f"only {pinned:.0%} of the samples sit exactly on an actuator limit, but with sigma = 3 "
+        f"against a range of [{hh['lo']}, {hh['hi']}] about three quarters of the draws fall "
+        "outside it — a clamp pins those to the limit; rescaling or wrapping does not")
 
 
 def test_rollout_matches_hidden_reference():
@@ -199,6 +232,29 @@ def test_refit_invariants():
         "the refitted plan left the actuator range, which a convex combination of in-range "
         "samples cannot do — the weights are not normalised to sum to one")
 
+    # lambda is the temperature, and every check above is blind to it: equal costs, a spike and
+    # a shift all come out the same whatever lambda is. These do not. Graded costs run 0..11,
+    # so lambda sets how sharply exp(-cost/lambda) discriminates between them.
+    hot = lesson.rows(_refit("graded", "0", lam="1e6"), "mean")[0]
+    assert np.allclose(hot, arith, rtol=0.0, atol=1e-4), (
+        f"at lambda = 1e6 the refit gave {np.round(hot, 4).tolist()} but the unweighted mean of "
+        f"the same samples is {np.round(arith, 4).tolist()} — a huge lambda makes every "
+        "exp(-(cost-min)/lambda) ~ 1, so the refit must collapse to the arithmetic mean. Divide "
+        "the cost difference BY lambda; dropping lambda leaves you permanently at lambda = 1")
+    cold = lesson.rows(_refit("graded", "0", lam="0.01"), "mean")[0]
+    assert np.allclose(cold, lesson.rows(sp, "first")[0], rtol=0.0, atol=1e-9), (
+        f"at lambda = 0.01 the refit gave {np.round(cold, 4).tolist()} but the cheapest sample "
+        "is the first one — a tiny lambda makes the softmax an argmin, so the refit must reduce "
+        "to that single plan")
+    assert not np.allclose(hot, cold, rtol=0.0, atol=1e-6), (
+        "lambda = 1e6 and lambda = 0.01 produced the same plan — the lambda argument is never "
+        "being used; it is the temperature, not a cosmetic scale factor")
+    assert not np.allclose(small, hot, rtol=0.0, atol=1e-6) and \
+        not np.allclose(small, cold, rtol=0.0, atol=1e-6), (
+        "the default lambda gave the same plan as lambda = 1e6 or lambda = 0.01 — at lambda = 30 "
+        "against costs 0..11 the refit should sit strictly between the arithmetic mean and the "
+        "single best sample")
+
 
 def test_closed_loop_swings_up():
     met = _cached("mpc_default", lambda: lesson.metrics(lesson.run_cpp("mpc")))
@@ -226,8 +282,12 @@ def test_python_rollout_matches_cpp():
     plan = [max(-1.0, min(1.0, rng.gauss(0.0, 0.55))) for _ in range(48)]
     model, data, scratch = lesson.fresh()
     mine = lesson.python_rollout_cost(model, data, scratch, plan)
-    assert isinstance(mine, float), (
-        f"python_rollout_cost returned {type(mine).__name__}; return a plain float")
+    # `is float`, not isinstance: np.float64 subclasses float, so isinstance cannot tell a
+    # plain Python float from a numpy scalar, and the docstring asks for the former.
+    assert type(mine) is float, (
+        f"python_rollout_cost returned {type(mine).__name__}; return a plain Python float — "
+        "accumulate into a float and return it, or wrap the result in float(...). A numpy "
+        "scalar sneaks past isinstance(x, float) and then carries dtype baggage downstream")
     assert abs(float(data.qpos[1]) - math.pi) < 1e-12, (
         "python_rollout_cost moved the live `data` — copy into `scratch` first and step that")
     ref = _reference_cost(plan)
@@ -250,6 +310,16 @@ def test_rollout_budget_arithmetic():
         f"plan_seconds_per_tick was {b['plan_seconds_per_tick']}, expected 8000/1e6 = 0.008")
     assert b["realtime"] is True, "8 ms of planning fits a 10 ms tick, so realtime is True"
     assert b["max_samples"] == 250, f"max_samples was {b['max_samples']}, expected 250"
+
+    # 8000.0 == 8000 and 250.0 == 250, so every equality above is blind to the type. Both of
+    # these count things that cannot come in fractions.
+    assert type(b["steps_per_tick"]) is int, (
+        f"steps_per_tick came back as {type(b['steps_per_tick']).__name__} "
+        f"({b['steps_per_tick']!r}) — it counts mj_step calls, so it is an int; a float here "
+        "compares equal to 8000 and still says you can run half a step")
+    assert type(b["max_samples"]) is int, (
+        f"max_samples came back as {type(b['max_samples']).__name__} ({b['max_samples']!r}) — "
+        "250.0 is not a whole number of samples; wrap the floor division in int()")
 
     slow = lesson.rollout_budget(200, 40, 100.0, 300_000.0)
     assert slow["realtime"] is False, "26.7 ms of planning cannot fit a 10 ms tick"
@@ -287,6 +357,20 @@ def test_rollout_budget_arithmetic():
     assert exact["realtime"] is True, (
         "a planner that exactly fills its control tick still fits — compare "
         "plan_seconds_per_tick <= tick_seconds, not <")
+
+    # A budget you cannot compute is not a budget. Dividing the work by a throughput of zero
+    # raises all by itself, so the straightforward implementation passes this without trying;
+    # only a try/except that invents a default gets past it.
+    try:
+        bad = lesson.rollout_budget(200, 40, 100.0, 0.0)
+    except ZeroDivisionError:
+        pass
+    else:
+        raise AssertionError(
+            f"rollout_budget(200, 40, 100.0, 0.0) returned {bad} instead of letting the "
+            "ZeroDivisionError through — you wrapped the arithmetic in try/except and returned "
+            "a default. A zeroed dict reads like a real answer (realtime False, max_samples 0) "
+            "and hides the bad throughput that produced it")
 
 
 def test_cpp_outruns_python_on_identical_work():

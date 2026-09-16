@@ -7,12 +7,15 @@ These cases deliberately differ from the notebook's public `_check_*` functions.
 the failure modes a plausible-looking wrong implementation has: a PD law that works at equal
 gains but not at unequal ones, a controller that mutates the live qpos view it was handed, a
 bias term captured once instead of read every call, a sweep that ignores the kd and
-gravity_comp arguments it was given, and a stability limit that came from the grid rather
-than from measured error.
+gravity_comp arguments it was given, a stability limit that came from the grid rather than
+from measured error, a steady-state error read off the final sample instead of the tail, a
+diverged episode counted as a usable gain, and a tolerance widened until everything passes.
 
 **No test here asserts a gain value.** The stability ceiling is a property of this model,
 this timestep and this machine; it is only ever read back out of measured steady-state error,
-so a student whose loop tops out somewhere else still scores full marks.
+so a student whose loop tops out somewhere else still scores full marks. What the rubric does
+own is what "held the pose" is allowed to mean: HOLD_TOL below is an error in radians, and a
+ceiling has to clear it as well as the notebook's own SSE_TOL.
 """
 import importlib.util, os
 from pathlib import Path
@@ -29,6 +32,12 @@ _spec.loader.exec_module(lesson)
 DROOP_RATIO_LO, DROOP_RATIO_HI = 0.90, 1.10   # measured droop vs the |qfrc_bias| / kp model
 COMPENSATED_MAX = 1.0e-4                      # rad: what "the droop is gone" has to mean
 IMPROVEMENT_MIN = 100.0                       # x: compensated must beat uncompensated by this
+HOLD_TOL = 1.0e-2                             # rad: the RUBRIC's own meaning of "this gain
+#                                               held the pose". The lesson defines SSE_TOL
+#                                               too, and the grader reads that for internal
+#                                               consistency — but a ceiling is only ever
+#                                               accepted if it also clears this one, so
+#                                               widening SSE_TOL cannot buy marks.
 
 
 def _bias_magnitude(q=None):
@@ -149,9 +158,31 @@ def test_gravity_comp_reads_the_bias_at_the_current_pose():
 def test_uncompensated_droop_equals_bias_over_kp():
     """The lesson's first claim, graded on measured error at gains the notebook never uses."""
     bias = _bias_magnitude()
+    model, _ = lesson.build()
+    full = int(round(lesson.T_SIM / model.opt.timestep))
     for kp in (150.0, 300.0):
         rec = lesson.run_episode(kp, 6.0, gravity_comp=False)
         assert not rec["diverged"], f"the uncompensated episode at kp={kp} diverged"
+        assert rec["steps"] == full, (
+            f"the episode at kp={kp} did not diverge, but it ran {rec['steps']} of the "
+            f"{full} steps that {lesson.T_SIM} s at a {model.opt.timestep} s timestep comes "
+            "to — an episode that stops early leaves fabricated zeros in the tail it is "
+            "measured over. `t_sim // timestep` silently loses a step to floating-point "
+            "division, and `range(n - 1)` loses the last one; `int(round(t_sim / dt))` with "
+            "`range(n)` is the pair that agrees"
+        )
+        # `steps` is a field you report; it is not proof the loop wrote every row. A
+        # four-step episode has a one-row tail, so an off-by-one in the loop bound leaves
+        # that single row at its initialised zero and the "error" comes back as exactly 0.0
+        # for an arm that has not moved at all.
+        short = lesson.run_episode(kp, 6.0, gravity_comp=False, t_sim=4 * model.opt.timestep)
+        assert short["steady_state_error"] > 0.1, (
+            f"an episode of four timesteps, starting far from the target, reported a "
+            f"steady-state error of {short['steady_state_error']:.3e} rad — the arm cannot "
+            "have reached the target in 8 ms. Its error history has a row per step and its "
+            "tail is one row: if your loop bound stops one short of the array, that row is "
+            "never written and you are averaging a zero you invented"
+        )
         predicted = bias / kp
         ratio = rec["steady_state_error"] / predicted
         assert DROOP_RATIO_LO < ratio < DROOP_RATIO_HI, (
@@ -241,8 +272,47 @@ def test_sweep_passes_kd_and_gravity_comp_through():
 
 
 def test_stability_limit_comes_from_measured_error():
-    """A hidden grid, four decades wide. The ceiling is wherever the measurement puts it."""
-    grid = [30.0, 300.0, 3000.0, 30000.0]
+    """A hidden grid, three decades wide, with a gain placed in the band where the loop is
+    still finite but has stopped holding — the band a four-point grid of pure decades skips
+    entirely, and the only band in which "not holding" and "diverged" can be told apart.
+    The ceiling is wherever the measurement puts it, but it has to BE a measurement, of the
+    tail of the episode, of an episode that did not blow up.
+    """
+    # (i) The metric. A joint ringing at +-0.5 rad whose final sample happens to land on the
+    #     target has not settled; averaging the tail is what makes that visible.
+    ring = np.zeros((400, 2))
+    ring[:, 0] = np.tile([0.5, 0.0, -0.5, 0.0], 100)      # ends on 0.0, rings at +-0.5
+    ring_sse = lesson.steady_state_error(ring)
+    assert ring_sse > 0.1, (
+        f"a joint oscillating at +-0.5 rad reported a steady-state error of {ring_sse:.3e} "
+        "rad, because its very last sample happened to cross the target — steady-state "
+        "error is the mean absolute error over the LAST QUARTER of the episode, not the "
+        "final value; a final-sample metric certifies a ringing gain as stable and pushes "
+        "your stability ceiling straight through the real one"
+    )
+    settled = np.zeros((400, 2))
+    settled[:100, 0] = 2.0                                # a big transient, then silence
+    settled_sse = lesson.steady_state_error(settled)
+    assert settled_sse < 1.0e-9, (
+        f"an episode whose error was 2 rad for its first quarter and zero afterwards "
+        f"reported {settled_sse:.3e} rad — the transient is not steady state; average the "
+        "tail, not the whole history"
+    )
+
+    # (ii) A diverged episode stops early, so its error history is a handful of steps and
+    #      can read small. The flag disqualifies it however small the number is.
+    fake = [{"kp": 100.0, "kd": 5.0, "gravity_comp": True,
+             "steady_state_error": 1.0e-6, "diverged": False},
+            {"kp": 900.0, "kd": 5.0, "gravity_comp": True,
+             "steady_state_error": 0.0, "diverged": True}]
+    fake_limit = lesson.stability_limit(fake)
+    assert fake_limit == 100.0, (
+        f"given a two-gain list whose higher gain diverged with a tiny recorded error, "
+        f"stability_limit returned {fake_limit} instead of 100.0 — check the diverged flag "
+        "before you look at the error at all"
+    )
+
+    grid = [30.0, 300.0, 3000.0, 15000.0, 30000.0]
     records = lesson.sweep_kp(grid, 5.0, gravity_comp=True)
     failed = [r for r in records if r["diverged"] or r["steady_state_error"] > lesson.SSE_TOL]
     held = [r for r in records if not r["diverged"]
@@ -261,6 +331,23 @@ def test_stability_limit_comes_from_measured_error():
         f"stability_limit returned {limit}, but the highest gain whose MEASURED error stayed "
         f"within tolerance was {max(r['kp'] for r in held)} — the limit is read out of the "
         "measurements, never assumed from the grid"
+    )
+    # The limit has to survive the rubric's own definition of holding, not only the one this
+    # file happens to set. SSE_TOL is a constant in your notebook; a loop's stability is not.
+    top = [r for r in records if r["kp"] == limit]
+    assert top, (
+        f"stability_limit returned {limit}, which is not one of the gains it was handed "
+        f"({[r['kp'] for r in records]}) — return a swept gain, not an interpolation"
+    )
+    assert not top[0]["diverged"], (
+        f"the gain you returned as the ceiling ({limit:.0f}) diverged in its own episode"
+    )
+    assert top[0]["steady_state_error"] <= HOLD_TOL, (
+        f"you called kp={limit:.0f} the stability ceiling, but its measured steady-state "
+        f"error is {top[0]['steady_state_error']:.3e} rad — above the {HOLD_TOL:.0e} rad "
+        "this course means by holding the pose. A gain that neither diverges nor settles is "
+        "still a gain your loop cannot use; raising SSE_TOL changes the number you print, "
+        "not the stiffness at which the loop stopped working"
     )
     assert limit < max(grid), (
         f"the top of the grid ({max(grid):.0f}) came back usable; at that stiffness the "
@@ -307,7 +394,9 @@ RUBRIC = [
     (test_sweep_passes_kd_and_gravity_comp_through, 3,
      "forward both arguments to run_episode; the grader calls you with non-default values"),
     (test_stability_limit_comes_from_measured_error, 3,
-     "sweep the grid you are given and let stability_limit read the ceiling off the error"),
+     "sweep the grid you are given and let stability_limit read the ceiling off the error: "
+     "the tail of the episode, not its last sample; never a diverged run; and a gain that "
+     "rings forever is not holding, however wide you set SSE_TOL"),
     (test_sweep_episodes_do_not_leak_state_into_each_other, 2,
      "a fresh build() per episode, so a diverged gain cannot affect the next one"),
 ]

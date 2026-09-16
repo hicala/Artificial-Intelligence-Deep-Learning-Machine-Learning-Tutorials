@@ -3,7 +3,7 @@
 Each entry: (callable, points, hint shown on failure).
 Partial credit is mandatory — never collapse the rubric into one all-or-nothing test.
 
-Three rules matter in this particular lesson and are deliberate:
+These rules matter in this particular lesson and are deliberate:
 
 * `test_measure_rss_high_water` must allocate more than anything else that has run in the
   grading process, or a correct implementation would report a rise of 0.0 — the very trap the
@@ -17,6 +17,11 @@ Three rules matter in this particular lesson and are deliberate:
   `stop()` after every call are two routes to the same guarantee — this call's peak is not the
   last call's — and `test_measure_peak_resets_between_calls` accepts either. Failing a correct
   implementation for choosing the other route would be a bug in the grader, not in the answer.
+* `test_measure_does_not_swallow_exceptions` is what stops `try/except Exception: return a
+  default` from scoring full marks. Every other case hands `measure` a callable that succeeds,
+  so a profiler that quietly turns a crash into a zero-cost Measurement looks perfect on them.
+* `test_measure_rss_high_water` also checks the absolute reading, not only the rise. Reporting
+  the BEFORE reading as `rss_hwm_mib` leaves every delta correct and every other case green.
 * `test_measure_delta_is_clamped` injects a falling reading. A real high-water mark never
   falls, so the clamp the exercise asks for would otherwise be ungradeable — stated in the
   docstring, enforced nowhere. An implementation that reads the OS directly rather than
@@ -110,7 +115,45 @@ def test_measure_rss_high_water():
         f"mmap pages never reach Python's allocator, so tracemalloc should see almost "
         f"nothing, not {m.py_peak_mib:.1f} MiB — are both numbers coming from the same source?"
     )
+    # rss_delta_mib >= 200 above means the reading AFTER the call is at least 200 MiB past
+    # the record this call started from, so a correct rss_hwm_mib clears that bar too. An
+    # implementation that reports the BEFORE reading gets the delta right and this wrong,
+    # which is the whole difference between an absolute peak and a rise.
+    assert m.rss_hwm_mib >= record_to_beat + 200.0, (
+        f"the call pushed the process peak to at least {record_to_beat + 200:.0f} MiB, but "
+        f"rss_hwm_mib came back {m.rss_hwm_mib:.0f} MiB — that is the reading taken BEFORE "
+        "the call. rss_hwm_mib is the high-water mark AFTER it; only rss_delta_mib is a "
+        "difference between the two"
+    )
     assert m.rss_hwm_mib >= baseline.rss_hwm_mib, "a high-water mark can never fall"
+
+
+def test_measure_does_not_swallow_exceptions():
+    class Boom(RuntimeError):
+        pass
+
+    def explode():
+        raise Boom("the measured call failed")
+
+    try:
+        m = lesson.measure(explode)
+    except Boom:
+        pass
+    else:
+        raise AssertionError(
+            f"measure(explode) returned {m!r} instead of letting the exception through — "
+            "wrapping fn in try/except and returning a default turns a crashed run into a "
+            "plausible-looking measurement of work that never happened. Use try/finally if "
+            "you need to stop the clock and switch tracing off, and let the error propagate"
+        )
+    # Tracing must not be left running by the failed call: the next call's peak would inherit
+    # everything allocated since, and the interpreter would keep paying the tracing tax.
+    after = lesson.measure(bytearray, 1024)
+    assert after.py_peak_mib < 5.0, (
+        f"after a call that raised, the next measurement reported {after.py_peak_mib:.2f} MiB "
+        "for a 1 KiB allocation — tracemalloc was left running (and unreset) by the failure; "
+        "put the clean-up in a finally block so it happens on both paths"
+    )
 
 
 def test_measure_delta_is_clamped():
@@ -229,6 +272,11 @@ def test_profile_returns_measurements():
         assert m.wall_s >= 0.0, f"{name} reported a negative duration"
     # A second, different n: the n must be the one profile was handed, not a remembered one.
     other = lesson.profile({"exact": lesson.exact_sum_squares}, 100)
+    assert set(other) == {"exact"}, (
+        f"profiling one implementation returned {sorted(other)} — entries from an earlier "
+        "call are still in the table; a dict built fresh inside profile() cannot do that, but "
+        "one supplied as a default argument is created once and reused by every call"
+    )
     assert other["exact"].result == _exact(100), (
         f"profile(..., 100) gave {other['exact'].result!r}, not {_exact(100)} — an n is "
         "hard-coded somewhere; pass profile's own n through to each implementation"
@@ -289,6 +337,9 @@ RUBRIC = [
      "rss_delta_mib is max(0.0, after - before) — never a negative cost"),
     (test_measure_uses_a_monotonic_clock, 3,
      "time.perf_counter(), not time.time(): the wall clock is not a stopwatch"),
+    (test_measure_does_not_swallow_exceptions, 2,
+     "try/finally around the call, never try/except: a measured call raises what the plain "
+     "call would have raised, and the clean-up still runs"),
     (test_chunk_bounds, 4,
      "min(start + chunk, n) makes the last slice short; a non-positive chunk is a ValueError"),
     (test_sum_squares_chunked_exact, 5,

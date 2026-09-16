@@ -70,6 +70,13 @@ def test_best_pair_empty_and_singleton():
     assert lesson.cpp_best_pair({(260, 261): 1}) == (260, 261, 1)
 
 
+def _merge_raw(seq, a, b, new_id):
+    """apply_merge's BOTH outputs: the rewritten sequence and the length it returned."""
+    got = lesson.run_cpp(["merge", "--seq", ",".join(str(s) for s in seq),
+                          "--a", str(a), "--b", str(b), "--new-id", str(new_id)])
+    return got["seq"], got["length"]
+
+
 def test_apply_merge_overlap_and_tail():
     # An odd run, a match ending exactly at the last position, and a match at the very start.
     assert lesson.cpp_apply_merge([7, 7, 7, 7, 7], 7, 7, 400) == [400, 400, 7]
@@ -77,6 +84,17 @@ def test_apply_merge_overlap_and_tail():
     assert lesson.cpp_apply_merge([9, 9, 1], 9, 9, 400) == [400, 1]
     # Ids above 255 must survive: symbols are ints, not bytes.
     assert lesson.cpp_apply_merge([300, 301, 300, 301], 300, 301, 500) == [500, 500]
+    # The RETURNED length is the other half of the contract, and it is easy to get wrong while
+    # the rewritten sequence is perfect: returning the read cursor, or the size before the
+    # resize, both hand back the PRE-merge length. Cases where the two differ, where they
+    # agree, and where the sequence is empty.
+    for seq, a, b, new_id in (([7, 7, 7, 7, 7], 7, 7, 400), ([1, 2, 3], 2, 1, 400),
+                              ([], 1, 2, 400), ([5, 1, 2, 1, 2], 1, 2, 400)):
+        rewritten, reported = _merge_raw(seq, a, b, new_id)
+        assert reported == len(rewritten), (
+            f"apply_merge on {seq} rewrote it to {rewritten} ({len(rewritten)} symbols) but "
+            f"returned {reported} — return the WRITE cursor, which is the length after the "
+            "merge, not the read cursor and not the length you started with")
 
 
 def test_apply_merge_leaves_others_alone():
@@ -109,6 +127,18 @@ def test_train_stop_rule():
     # doing nothing. Derived from the Python trainer in the notebook, not from the C++.
     path.write_bytes(b"abcabcabc abcabcabc abcabcabc")
     assert lesson.cpp_train(path, 2)["merges"] == [(97, 98, 257, 9), (257, 99, 258, 9)]
+    # The BOUNDARY of the stop rule, which every other case here clears by a mile. Every merge
+    # available in this corpus occurs exactly kMinCount times, so `count < kMinCount` keeps
+    # both and `count <= kMinCount` — one character wrong, and invisible on any corpus with a
+    # popular pair in it — silently returns nothing at all.
+    path.write_bytes(b"ab ab cd cd")
+    boundary = lesson.cpp_train(path, 5)
+    assert boundary["merges"] == [(97, 98, 257, 2), (99, 100, 258, 2)], (
+        f"a pair seen exactly kMinCount (2) times is still worth merging, and this corpus has "
+        f"two of them; got {boundary['merges']} — the test is `count < kMinCount`, not `<=`")
+    assert boundary["final_symbols"] == 8, (
+        "both boundary merges were recorded but the sequence did not shrink to match — train "
+        "is recording merges it never applies")
 
 
 def test_cpp_matches_python_oracle():
@@ -133,13 +163,15 @@ RUBRIC = [
     (test_best_pair_empty_and_singleton, 2,
      "exercise 2: an empty map returns false and writes nothing through the out-parameters"),
     (test_apply_merge_overlap_and_tail, 3,
-     "exercise 3: advance the read cursor by two after a match, and never read past the end"),
+     "exercise 3: advance the read cursor by two after a match, never read past the end, and "
+     "return the WRITE cursor as the new length"),
     (test_apply_merge_leaves_others_alone, 2,
      "exercise 3: resize() to the WRITE cursor, so an absent pair changes nothing"),
     (test_train_matches_python_oracle, 5,
      "exercise 4: number merges kFirstMergeId + k, and apply each one before the next count"),
     (test_train_stop_rule, 2,
-     "exercise 4: stop when the best count is below kMinCount, before recording that merge"),
+     "exercise 4: stop when the best count is strictly BELOW kMinCount — a pair seen exactly "
+     "kMinCount times is still merged — and stop before recording that merge"),
     (test_cpp_matches_python_oracle, 3,
      "build with -O2 and keep allocations out of the loop; the Makefile already does both"),
 ]

@@ -8,10 +8,15 @@ Three rules matter in this lesson and are deliberate:
 
 * The cases below are NOT the notebook's public `_check_*` cases. Passing what you can see is
   not the same as being right, so every test here uses different inputs.
-* `train_bpe`, `encode` and `token_tax` are graded against an INDEPENDENT reference
-  implementation written at the foot of this file, never against the student's own other
-  functions. A student whose `get_stats` is subtly wrong should lose points on `get_stats`,
-  not have that error silently define what "correct" means for `train_bpe`.
+* `train_bpe` and `encode` are graded against an INDEPENDENT reference implementation
+  written at the foot of this file, never against the student's own other functions. A
+  student whose `get_stats` is subtly wrong should lose points on `get_stats`, not have that
+  error silently define what "correct" means for `train_bpe`. `token_tax` is the exception,
+  and deliberately so: its job is to assemble rows from whatever `encode` returns, so its
+  `tokens` column is checked against the student's own `encode` — grading it against the
+  reference would charge one broken `encode` twice. Two order-independent anchors keep that
+  from being circular: an untrained script must sit exactly on the byte floor, and a trained
+  one must sit strictly below it.
 * The tie-break is graded by permuting the insertion order of one tied set. Any single
   ordering can be satisfied by luck of the dict; only invariance across permutations
   distinguishes a real comparison from "the first maximum I met".
@@ -176,10 +181,26 @@ def test_merge_leaves_others_alone():
     assert lesson.merge([5], (5, 5), 400) == [5]
     # The reversed pair must not match, and a partial prefix must not either.
     assert lesson.merge([1, 2, 1], (2, 2), 400) == [1, 2, 1]
+    # merge must BUILD a new list, not edit the one it was handed. An in-place merge returns
+    # the right answer to its own caller and is invisible to every value-equality check above,
+    # but train_bpe, encode and the section-13 comparison all pass the same list to merge
+    # twice and expect the original back the second time.
+    given = [7, 7, 7, 7, 1, 2, 7, 7]
+    snapshot = list(given)
+    first = lesson.merge(given, (7, 7), 400)
+    assert given == snapshot, (
+        f"merge modified its argument: the caller's list came back as {given}, not "
+        f"{snapshot} — build and return a NEW list instead of editing `seq` in place"
+    )
+    assert lesson.merge(given, (7, 7), 400) == first, (
+        "merging the same list twice must give the same answer twice"
+    )
     # Against the reference on real text, using the reference's own winning pair.
     seq = _ref_pretokenise(_HIDDEN_CORPUS.encode("utf-8"))
     a, b, _ = _ref_best(_ref_stats(seq))
-    assert lesson.merge(seq, (a, b), 998) == _ref_merge(seq, (a, b), 998)
+    seq_snapshot = list(seq)
+    assert lesson.merge(seq, (a, b), 998) == _ref_merge(seq_snapshot, (a, b), 998)
+    assert seq == seq_snapshot, "merge modified the sequence it was given on real text too"
 
 
 # --- exercise 3: best_pair --------------------------------------------------------------
@@ -229,6 +250,28 @@ def test_train_bpe_vocab_size_and_stop_rule():
     assert _student_model(_HIDDEN_CORPUS, FIRST_MERGE_ID).order == []
     # No pair occurs twice, so no merge is worth making however many are asked for.
     assert _student_model("uvwxyz", 400).order == []
+    # The MIN_COUNT boundary itself, which every case above steps over. A pair seen EXACTLY
+    # MIN_COUNT times IS worth merging: the rule is "stop when count < MIN_COUNT", and the
+    # off-by-one "<= MIN_COUNT" silently throws away the last useful merge of every corpus.
+    assert _student_model("zz zz", 258).order == [(122, 122, 257, 2)], (
+        "(z, z) occurs exactly MIN_COUNT times here, so it must be merged — the stop rule is "
+        "strictly BELOW MIN_COUNT, not at it"
+    )
+    # ...and one occurrence short of it is not.
+    assert _student_model("zq zz", 300).order == [], (
+        "every pair here occurs once, which is below MIN_COUNT, so no merge may be recorded"
+    )
+    # merges and order must describe the same merge list. A trainer that leaks state between
+    # calls — a mutable default argument, a module-level dict — returns a correct `order` and
+    # a merges dict that has been growing since the first call, and nothing else here sees it.
+    leaky = _student_model(_HIDDEN_CORPUS, 270)
+    assert len(leaky.merges) == len(leaky.order) == 270 - FIRST_MERGE_ID, (
+        f"merges has {len(leaky.merges)} entries and order has {len(leaky.order)}; both must "
+        f"be {270 - FIRST_MERGE_ID} — build them fresh inside train_bpe on every call"
+    )
+    assert [(a, b) for a, b, _, _ in leaky.order] == list(leaky.merges), (
+        "merges and order must hold the same pairs, in the same training order"
+    )
     # Two merges available, both pinned exactly, ids included — a train_bpe that returns an
     # empty list, or numbers ids from anywhere but FIRST_MERGE_ID, cannot collect these points.
     assert [row[:3] for row in _student_model("xyxyxy xyxyxy", 259).order] == [
@@ -258,6 +301,21 @@ def test_encode_decode_roundtrip():
         assert lesson.decode(ids, model) == text, f"round trip failed for {text!r}"
         assert all(isinstance(i, int) for i in ids), "encode must return ints"
         assert BOUNDARY not in ids, f"BOUNDARY leaked into encode output for {text!r}"
+    # Every case above hands decode a complete, valid UTF-8 sequence, so a strict decode
+    # passes them all. The case that separates them is a token list that ends mid-character —
+    # exactly what a streaming decoder or a truncated generation hands you. It must come back
+    # as U+FFFD, neither raising nor being swallowed into an empty string.
+    lead = lesson.decode([0xD0], model)     # the lead byte of a two-byte Cyrillic character
+    assert lead == "�", (
+        f"decode([0xD0]) gave {lead!r}, expected '\\ufffd' — a lone lead byte is not valid "
+        "UTF-8, so decode must use errors='replace'. Letting it raise, or catching the error "
+        "and returning '', both lose the bytes that did decode."
+    )
+    partial = lesson.decode(list("ab".encode("utf-8")) + [0xE4, 0xB8], model)
+    assert partial == "ab�", (
+        f"decode on 'ab' plus a truncated three-byte character gave {partial!r}, expected "
+        "'ab\\ufffd' — the text that did decode must survive, with the broken tail replaced."
+    )
 
 
 def test_encode_applies_merges_and_matches_reference():
@@ -279,10 +337,21 @@ def test_encode_applies_merges_and_matches_reference():
 
 def test_token_tax_rows():
     model = _student_model(_HIDDEN_CORPUS, _HIDDEN_VOCAB)
-    samples = {"a": "banana bandana", "b": "мама мыла раму", "c": "知识就是力量。"}
+    # The keys are deliberately NOT in alphabetical order: "latin", "han", "cyrillic" sorts to
+    # "cyrillic", "han", "latin". A token_tax that iterates sorted(samples) instead of the
+    # mapping it was given answers a different question, and alphabetical keys would hide it.
+    samples = {"latin": "banana bandana", "han": "知识就是力量。", "cyrillic": "мама мыла раму"}
     rows = lesson.token_tax(model, samples)
-    assert [r["script"] for r in rows] == ["a", "b", "c"], "order must follow the input"
+    assert [r["script"] for r in rows] == ["latin", "han", "cyrillic"], (
+        f"rows came back as {[r['script'] for r in rows]} — the order must follow the mapping "
+        "you were given, not the sorted order of its keys"
+    )
     assert len(rows) == 3
+    # Exactly these keys: no fewer, and no extra working columns left behind.
+    assert set(rows[0]) == {"script", "text", "chars", "utf8_bytes", "tokens",
+                            "tokens_per_char", "bytes_per_char"}, (
+        f"row keys are {sorted(rows[0])} — return exactly the seven keys the docstring lists"
+    )
     for row, (name, text) in zip(rows, samples.items()):
         assert row["text"] == text
         assert row["chars"] == len(text)
@@ -292,9 +361,14 @@ def test_token_tax_rows():
         assert abs(row["bytes_per_char"] - row["utf8_bytes"] / row["chars"]) < 1e-9
     # The Han sample was never in the hidden corpus, so no merge can fire: it must sit exactly
     # on the byte floor. This is the measurement the lesson exists to make.
-    assert rows[2]["tokens"] == rows[2]["utf8_bytes"]
+    assert rows[1]["tokens"] == rows[1]["utf8_bytes"], (
+        "the Han sample is absent from the training corpus, so no merge can fire and its "
+        "token count must equal its UTF-8 byte count exactly"
+    )
     # And the trained Latin sample must be strictly below its own floor.
-    assert rows[0]["tokens"] < rows[0]["utf8_bytes"]
+    assert rows[0]["tokens"] < rows[0]["utf8_bytes"], (
+        "the Latin sample was trained on, so its merges must take it below the byte floor"
+    )
     # An empty samples mapping is an empty table, not a crash.
     assert lesson.token_tax(model, {}) == []
 

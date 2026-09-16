@@ -123,6 +123,12 @@ def _check_gait_targets() -> None:
           f"rad, knees {cycle[:, 1].min():+.2f}..{cycle[:, 1].max():+.2f} rad")
 
 
+# Run the check for THIS exercise, right here. The guard is what lets the autograder
+# import this file without every check firing: it imports under the name "lesson", while
+# a notebook cell and `python lesson.py` both run as "__main__".
+if __name__ == "__main__":
+    _check_gait_targets()
+
 # %% [markdown]
 # ## 3. Energy is the integral of torque times velocity
 
@@ -216,6 +222,9 @@ def _check_rollout_and_cot() -> None:
           f"{cost_of_transport(r['energy'], r['distance']):.4f}")
 
 
+if __name__ == "__main__":
+    _check_rollout_and_cot()
+
 # %% [markdown]
 # ## 5. Phase is not a detail
 
@@ -239,6 +248,9 @@ def _check_phase_matters() -> None:
     print("  the machine walks or falls over. Phase is the gait.")
 
 
+if __name__ == "__main__":
+    _check_phase_matters()
+
 # %% [markdown]
 # ## 6. Exercise 4 — a search you can afford
 
@@ -255,7 +267,11 @@ MAX_ROLLOUTS = 120
 
 def coordinate_search(start: dict, grid: dict = SEARCH_GRID, passes: int = 2,
                       max_rollouts: int = MAX_ROLLOUTS):
-    """Coordinate descent over gait parameters, minimising `gait_score`, under a hard cap."""
+    """Coordinate descent over gait parameters, minimising `gait_score`, under a hard cap.
+
+    `rollout` and `gait_score` are looked up by name at call time, never captured in a default
+    argument, so the autograder can swap them for instruments.
+    """
     model, data = load_walker()
     best = dict(start)
     best_score = gait_score(rollout(model, data, best))
@@ -275,7 +291,8 @@ def coordinate_search(start: dict, grid: dict = SEARCH_GRID, passes: int = 2,
     return best, best_score, used
 
 
-def _check_search() -> None:
+def _check_search() -> float:
+    """Run the search once, check it, print the comparison, and hand back its score."""
     model, data = load_walker()
     base = rollout(model, data, BASELINE_GAIT)
     base_score = gait_score(base)
@@ -306,7 +323,11 @@ def _check_search() -> None:
         f"only a {base_score / score:.2f}x improvement — the grid holds much better gaits than "
         "that, so check you carry each accepted improvement into the next parameter."
     )
+    return score
 
+
+if __name__ == "__main__":
+    SEARCH_SCORE = _check_search()
 
 # %% [markdown]
 # ## 7. Against the literature, honestly
@@ -336,6 +357,9 @@ def compare_against_published(measured_cot: float) -> None:
     print("  and they did not. Efficient walking is hard, and the honest version of that")
     print("  sentence names the accounting difference instead of hiding inside it.")
 
+
+if __name__ == "__main__":
+    compare_against_published(SEARCH_SCORE)
 
 # %% [markdown]
 # ## 8. Common mistakes
@@ -383,6 +407,9 @@ def _check_objective_matters() -> None:
     print("  Write down the metric you actually care about before you optimise anything.")
 
 
+if __name__ == "__main__":
+    _check_objective_matters()
+
 # %% [markdown]
 # ## 9. Self-check
 
@@ -417,20 +444,15 @@ def _check_self_check(answers: dict = None) -> None:
     print("self-check: all four right")
 
 
+if __name__ == "__main__":
+    _check_self_check()
+
 # %% [markdown]
 # ## What you built, and where it goes next
 
 # %%
 if __name__ == "__main__":
-    _check_gait_targets()
-    _check_rollout_and_cot()
-    _check_phase_matters()
-    _check_search()
-    _model, _data = load_walker()
-    _best, _score, _ = coordinate_search(BASELINE_GAIT, passes=2)
-    compare_against_published(_score)
-    _check_objective_matters()
-    _check_self_check()
+    print("F15-L05 reference solution complete: every check ran beside its exercise.")
 
 # %% [markdown]
 # ## Self-check answers

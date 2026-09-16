@@ -610,16 +610,8 @@ if __name__ == "__main__":
 #    - (b) `kd` cannot affect steady-state error, so the measurement must be wrong
 #    - (c) damping is only defined for continuous time
 #
-# Answers are at the foot of this file.
-#
-# ## What you built, and where it goes next
-#
-# A joint-space PD controller with feed-forward gravity compensation, plus a measured gain
-# curve and the stability ceiling of your own loop. This is the bottom layer of the humanoid
-# lab: every later policy in the flagship emits joint targets, and this controller is what
-# turns them into torques. The next lesson stacks a trajectory on top of it, where the same
-# `qfrc_bias` call carries the Coriolis terms you measured at the bent pose in section 2 —
-# terms a hand-written gravity formula would have missed entirely.
+# Answers are at the foot of this file. Before you reach for them, run the summary cell
+# below: questions 1, 3 and 5 are each settled by one of the numbers it prints.
 
 # %%
 if __name__ == "__main__":
@@ -633,6 +625,16 @@ if __name__ == "__main__":
           f"{uncompensated['steady_state_error'] / compensated['steady_state_error']:.0f}x")
     print(f"empirical stability limit at kd={KD_FIXED:.0f}: {limit:.0f} N m / rad")
     print(f"episodes simulated: {2 + len(KP_GRID) + len(KD_GRID) + 3}")
+
+# %% [markdown]
+# ## What you built, and where it goes next
+#
+# A joint-space PD controller with feed-forward gravity compensation, plus a measured gain
+# curve and the stability ceiling of your own loop. This is the bottom layer of the humanoid
+# lab: every later policy in the flagship emits joint targets, and this controller is what
+# turns them into torques. The next lesson stacks a trajectory on top of it, where the same
+# `qfrc_bias` call carries the Coriolis terms you measured at the bent pose in section 2 —
+# terms a hand-written gravity formula would have missed entirely.
 
 # %% [markdown]
 # ## Self-check answers

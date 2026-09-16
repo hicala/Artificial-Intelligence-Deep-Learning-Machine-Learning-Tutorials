@@ -23,6 +23,9 @@ lesson = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lesson)
 
 AS_OF = date(2026, 9, 16)
+# A second vantage point, chosen because obligations fall EXACTLY on it: "already binds"
+# and "still ahead" are both decided at this date, so < and <= stop being interchangeable.
+ON_THE_DAY = date(2026, 8, 2)
 
 # The law, written out here so the rubric is independent of the student's table.
 ART4 = "2025-02-02"
@@ -234,6 +237,20 @@ def test_missing_evidence_uses_the_obligation_set():
     """What a system owes follows from what applies to it, not from a fixed list."""
     heavy = _system(annex_iii_area="employment")
     required_missing = lesson.missing_evidence(heavy, AS_OF)
+    # Sorted, and stated as one exact list: the required items come out of a set, and a set
+    # has no order, so a report built on an unsorted return diffs differently on every run.
+    assert required_missing == sorted(required_missing), (
+        f"missing_evidence returned {required_missing} — return the ids SORTED. They come "
+        "from a set, so whatever order you got is an accident and will not repeat")
+    assert required_missing == [
+        "accuracy_robustness_cybersecurity_report", "ai_literacy_training_record",
+        "automatic_logging_design", "ce_marking_record", "conformity_assessment_record",
+        "data_governance_record", "eu_database_registration", "eu_declaration_of_conformity",
+        "human_oversight_plan", "instructions_for_use", "post_market_monitoring_plan",
+        "quality_management_system", "risk_management_system", "serious_incident_procedure",
+        "technical_documentation"], (
+        f"an unevidenced Annex III system is missing exactly the 14 Chapter III items plus "
+        f"the Article 4 record, sorted; got {required_missing}")
     assert "eu_database_registration" in required_missing, (
         "an Annex III system owes the EU database registration")
     assert "integrated_product_conformity_assessment" not in required_missing, (
@@ -265,9 +282,10 @@ def test_report_rows_and_shape():
     """Row structure, input order, and the arithmetic of days_to_deadline."""
     # The ids are deliberately NOT in alphabetical order: a report that sorts its rows instead
     # of preserving the registry order fails here, where ids like a/b/c would have hidden it.
-    systems = [_system(id="zeta-hire", annex_iii_area="employment"),
-               _system(id="alpha-note"),
-               _system(id="mid-score", prohibited_practice="social_scoring")]
+    systems = [_system(id="zeta-hire", name="hiring", annex_iii_area="employment"),
+               _system(id="alpha-note", name="notes"),
+               _system(id="mid-score", name="scoring",
+                       prohibited_practice="social_scoring")]
     report = lesson.conformity_report(systems, AS_OF)
     assert set(report) == {"as_of", "rows", "summary", "blocking"}, (
         f"top-level keys were {sorted(report)}")
@@ -286,6 +304,10 @@ def test_report_rows_and_shape():
             f"{expected_days}; it is (applies_from - as_of).days, negative once it binds")
         assert row["complete"] == (not row["missing"]), (
             f"row {row['id']}: complete must mean nothing missing")
+    assert [r["name"] for r in report["rows"]] == ["hiring", "notes", "scoring"], (
+        f"row names came back as {[r['name'] for r in report['rows']]} — copy the system's "
+        "'name' across; a pack that labels every row with its id is not readable by the "
+        "people who have to sign it")
 
     assert report["rows"][0]["days_to_deadline"] < 0, (
         "Article 4 bound in February 2025, so days_to_deadline is negative here")
@@ -314,6 +336,13 @@ def test_report_summary_arithmetic_and_next_deadline():
         f"two systems take the Annex III route, by_tier says "
         f"{summary['by_tier'].get('high_risk_annex_iii')}")
     assert "minimal" in summary["by_tier"], "the registry contains a minimal-risk system"
+    # The shipped registry happens to use all six tiers, so it cannot tell a tally from a
+    # pre-seeded table of zeroes. This two-system registry can.
+    narrow = lesson.conformity_report(
+        [_system(id="one"), _system(id="two", is_gpai_model=True)], AS_OF)["summary"]
+    assert narrow["by_tier"] == {"minimal": 1, "gpai_model": 1}, (
+        f"by_tier was {narrow['by_tier']} — count the tiers that actually occur, and only "
+        "those. A tier with no systems in it is absent from the table, not a row of zeroes")
     assert summary["next_deadline"] == "2026-12-02", (
         f"next_deadline was {summary['next_deadline']!r}; the earliest date still ahead of "
         "2026-09-16 among incomplete systems is the transitional marking date 2026-12-02")
@@ -337,6 +366,16 @@ def test_report_summary_arithmetic_and_next_deadline():
         f"next_deadline was {got!r}, expected {ANNEX_III} — the finished system's "
         f"{ART50_LEGACY} marking date must not be reported; a date a fully evidenced system "
         "already meets is not the next thing anyone has to do")
+
+    # Graded on the day itself: this system's Article 50(1) duty is dated exactly ON_THE_DAY.
+    # "Strictly after as_of" means today is not the next deadline — today is now.
+    edge = _system(id="edge", annex_iii_area="employment", interacts_with_humans=True,
+                   evidence={"ai_literacy_training_record": _present()})
+    on_the_day = lesson.conformity_report([edge], ON_THE_DAY)["summary"]["next_deadline"]
+    assert on_the_day == ANNEX_III, (
+        f"graded on {ON_THE_DAY.isoformat()}, next_deadline came back {on_the_day!r}. The "
+        f"Article 50(1) date IS {ON_THE_DAY.isoformat()}, so it is not still ahead: "
+        f"next_deadline is the earliest deadline STRICTLY after as_of, here {ANNEX_III}")
 
 
 def test_report_blocking_and_overdue():
@@ -362,7 +401,8 @@ def test_report_blocking_and_overdue():
 
     assert report["blocking"] == ["atlas-7b", "citizen-score", "loan-copilot"], (
         f"blocking was {report['blocking']}; it is the sorted ids that are prohibited or "
-        "overdue — note that neither high-risk system with a long gap list is among them")
+        "overdue — note that cv-screener, which has the second-longest gap list in the "
+        "registry, is not among them, because every one of its gaps is dated 2027")
     assert report["summary"]["overdue"] == 3, (
         f"summary['overdue'] was {report['summary']['overdue']}, expected 3")
 
@@ -376,6 +416,29 @@ def test_report_blocking_and_overdue():
     assert solo["blocking"] == ["banned"], (
         f"blocking was {solo['blocking']} — a prohibited practice blocks even when the "
         "paperwork is complete; you cannot evidence your way out of Article 5")
+
+    # The day an obligation binds, it binds. This system holds its Article 4 record, so its
+    # only gaps sit under Article 50(1) — dated exactly ON_THE_DAY — and under the 2027
+    # Annex III route. Grade it on 2026-08-02 and the Article 50 gap is a breach that day,
+    # not the day after.
+    edge = _system(id="edge", annex_iii_area="employment", interacts_with_humans=True,
+                   evidence={"ai_literacy_training_record": _present()})
+    day_of = lesson.conformity_report([edge], ON_THE_DAY)
+    assert "ai_literacy_training_record" not in day_of["rows"][0]["missing"], (
+        "the Article 4 record here is valid; only the Article 50 and Annex III items are gaps")
+    assert day_of["rows"][0]["overdue"], (
+        f"graded on {ON_THE_DAY.isoformat()} the row came back overdue="
+        f"{day_of['rows'][0]['overdue']}. Article 50(1) is dated {ON_THE_DAY.isoformat()} "
+        "and the disclosure is missing: an obligation binds ON its date, so compare with "
+        "<= as_of, not < as_of")
+    assert day_of["blocking"] == ["edge"], (
+        f"blocking was {day_of['blocking']} — a row overdue on the day itself blocks")
+
+    # One day earlier the same gap is still a plan, not a breach.
+    day_before = lesson.conformity_report([edge], date(2026, 8, 1))
+    assert not day_before["rows"][0]["overdue"], (
+        "on 2026-08-01 nothing this system owes has bound yet, so it is not overdue — if "
+        "this fails you are treating every gap as a breach")
 
 
 def test_render_report_is_a_readable_artefact():

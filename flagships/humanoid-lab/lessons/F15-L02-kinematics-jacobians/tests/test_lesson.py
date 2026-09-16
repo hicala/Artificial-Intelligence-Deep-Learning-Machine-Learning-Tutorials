@@ -11,6 +11,21 @@ quotient (which passes the notebook's own tolerance at the default step and fail
 larger one), a finite-difference helper that leaves the caller's data perturbed, an inverse
 kinematics loop that reports the residual from before its last step, one that ignores the
 joint limits, and one that ignores its `damping` argument.
+
+Five more cases were added after a mutation-testing pass, each closing a mutant that had been
+scoring 100%:
+
+* This arm has nq == nv, so a Jacobian allocated `(3, model.nq)` is the right shape by luck.
+  `_BALL_MJCF` is a second model with a ball joint, where nq != nv and the luck runs out.
+* An IK loop that keeps `history` in a mutable default argument looks right on its first call
+  and is wrong on every later one, so the reachable solve is now run TWICE.
+* Damping enters the normal equations as lambda SQUARED. A loop that adds a bare `damping`
+  still converges and still slows down when damping rises, so the only thing that separates
+  the two is the size of the step itself — hence the one-iteration check against a step this
+  file computes for itself.
+* `tol` was a documented parameter that nothing ever passed a non-default value to.
+* An IK loop that catches the singular-matrix error and calls the result converged is
+  invisible at any positive damping, so one case drives it undamped into the singular pose.
 """
 import importlib.util, os
 from pathlib import Path
@@ -43,6 +58,24 @@ def _mj_site_jac(model, data, qpos):
 
 # A third pose, used nowhere in the notebook, so nothing can be tuned to the two it ships.
 THIRD_POSE = np.array([0.31, -0.22, -1.05, -0.40, 0.55, -1.30, 0.22, -0.31, 0.40, -1.10])
+
+# The lesson's arm is all hinges, so nq == nv == 10 and a Jacobian sized off nq is the right
+# shape for the wrong reason. This second model has one ball joint: nq=4, nv=3. Section 9 of
+# the notebook is about exactly this gap, so the rubric grades it rather than taking it on
+# trust. No file and no network: compiled from a string, in memory.
+_BALL_MJCF = """
+<mujoco>
+  <worldbody>
+    <body name="link" pos="0 0 1">
+      <joint name="ball" type="ball"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.02"/>
+      <site name="tip" pos="0.05 0 -0.3"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+# A unit quaternion well away from the identity, so the columns are non-trivial.
+_BALL_QPOS = np.array([0.8253356, 0.4034226, 0.3025670, 0.2521391])
 
 
 # --- exercise 1: body_world_position ------------------------------------------------------
@@ -153,6 +186,30 @@ def test_analytic_jacobian_columns_are_indexed_by_dof():
     assert np.linalg.norm(got[:, 5]) > 0.1, (
         f"the elbow column has norm {np.linalg.norm(got[:, 5]):.3e} at the ready pose, which "
         "cannot be right for a bent arm — check that you are not transposing or shifting"
+    )
+    # nv columns, not nq. On the arm those two numbers are equal; on a model with a ball joint
+    # they are not, and sizing off nq produces a matrix one column too wide.
+    ball = mujoco.MjModel.from_xml_string(_BALL_MJCF)
+    ball_data = mujoco.MjData(ball)
+    assert (ball.nq, ball.nv) == (4, 3), "the rubric's own ball model changed shape"
+    spun = lesson.analytic_jacobian(ball, ball_data, "tip", _BALL_QPOS)
+    assert spun.shape == (3, ball.nv), (
+        f"on a model with one ball joint (nq={ball.nq}, nv={ball.nv}) your Jacobian came back "
+        f"{spun.shape}, and a Jacobian has one column per DOF, so it must be (3, {ball.nv}). "
+        f"A {(3, ball.nq)} answer means you allocated model.nq columns — which is the right "
+        "width on the lesson's arm only because every joint there is a hinge"
+    )
+    # Reference on its own data object, so the answer never depends on where the student's
+    # function happened to leave ball_data.
+    ball_check = mujoco.MjData(ball)
+    ball_check.qpos[:] = _BALL_QPOS
+    mujoco.mj_forward(ball, ball_check)
+    ball_reference = np.zeros((3, ball.nv))
+    mujoco.mj_jacSite(ball, ball_check, ball_reference, None,
+                      mujoco.mj_name2id(ball, mujoco.mjtObj.mjOBJ_SITE, "tip"))
+    assert np.abs(spun - ball_reference).max() < 1e-12, (
+        f"on the ball-joint model your Jacobian differs from mj_jacSite by up to "
+        f"{np.abs(spun - ball_reference).max():.3e}"
     )
 
 
@@ -293,6 +350,45 @@ def test_ik_converges_on_a_reachable_target():
         f"history holds {len(out['history'])} residuals after {out['iterations']} iterations"
     )
     assert out["history"][0] > out["history"][-1], "the residual never improved"
+    # Run the identical solve a second time. A history kept in a mutable default argument, or
+    # in a module-level list, is empty exactly once and then never again.
+    encore = lesson.ik_damped_least_squares(model, data, lesson.PALM_SITE,
+                                            lesson.REACHABLE_TARGET, q_start=lesson.HOME.copy())
+    assert len(encore["history"]) == encore["iterations"] + 1, (
+        f"run once, history held {len(out['history'])} residuals for {out['iterations']} "
+        f"iterations; run again with the same arguments it held {len(encore['history'])} for "
+        f"{encore['iterations']} — the list is surviving between calls. A default argument is "
+        "evaluated once when the function is defined, so `history=[]` in the signature is ONE "
+        "list shared by every call. Build it inside the function body instead"
+    )
+    assert encore["residual"] == out["residual"] and encore["iterations"] == out["iterations"], (
+        "the same solve gave a different answer the second time it ran — some state is "
+        "leaking between calls"
+    )
+    # Pin the step itself. Converging is not enough: the damping enters the normal equations
+    # as lambda SQUARED, and a bare `damping` also converges, just with a different step. One
+    # iteration from a known pose separates them, and it also pins the sign of e and the clip.
+    one = lesson.ik_damped_least_squares(model, data, lesson.PALM_SITE,
+                                         lesson.REACHABLE_TARGET, q_start=lesson.READY.copy(),
+                                         damping=0.05, max_iters=1)
+    lam = 0.05
+    jac_ref = _mj_site_jac(model, data, lesson.READY)[:, lesson.ARM_DOFS]
+    data.qpos[:] = lesson.READY
+    mujoco.mj_forward(model, data)
+    err_ref = lesson.REACHABLE_TARGET - np.array(data.site_xpos[sid])
+    step_ref = jac_ref.T @ np.linalg.solve(jac_ref @ jac_ref.T + lam ** 2 * np.eye(3), err_ref)
+    q_ref = np.array(lesson.READY, dtype=float)
+    q_ref[lesson.ARM_DOFS] = np.clip(q_ref[lesson.ARM_DOFS] + step_ref,
+                                     lesson.JOINT_LO[lesson.ARM_DOFS],
+                                     lesson.JOINT_HI[lesson.ARM_DOFS])
+    assert np.allclose(np.asarray(one["qpos"]), q_ref, atol=1e-8), (
+        f"after a single damped step from the ready pose you are at "
+        f"{np.asarray(one['qpos'])[lesson.ARM_DOFS]}, and the damped least-squares step is "
+        f"{q_ref[lesson.ARM_DOFS]}. The damping enters as lambda SQUARED — "
+        "J.T @ solve(J @ J.T + damping**2 * I, e) — so a bare `damping * I` gives a step of "
+        f"the wrong size ({np.linalg.norm(np.asarray(one['qpos']) - lesson.READY):.5f} against "
+        f"{np.linalg.norm(q_ref - lesson.READY):.5f} here) even though it still converges"
+    )
 
 
 def test_ik_reports_an_honest_residual_when_out_of_reach():
@@ -338,6 +434,23 @@ def test_ik_reports_an_honest_residual_when_out_of_reach():
     assert short["residual"] < short["history"][-1], (
         "the residual you reported is no better than the one from before your final step"
     )
+    # Undamped, from the pose the arm is deliberately singular in. The reference raises
+    # LinAlgError here and that is a fine answer; quietly catching it and reporting success is
+    # not. Either behaviour passes, as long as `converged` is never True above `tol`.
+    try:
+        singular = lesson.ik_damped_least_squares(model, data, lesson.PALM_SITE,
+                                                  lesson.REACHABLE_TARGET,
+                                                  q_start=lesson.HOME.copy(), damping=0.0)
+    except np.linalg.LinAlgError:
+        singular = None
+    if singular is not None:
+        assert not (singular["converged"] and singular["residual"] >= lesson.IK_TOL), (
+            f"solving undamped from the singular home pose you reported converged=True with a "
+            f"residual of {singular['residual']:.4f} m, which is above the {lesson.IK_TOL:.0e} "
+            "tolerance. Something in the loop is swallowing a failure and returning a default "
+            "— never report convergence for a pose you did not actually reach. Letting the "
+            "singular solve raise is the honest alternative"
+        )
 
 
 def test_ik_respects_the_joint_limits():
@@ -359,8 +472,8 @@ def test_ik_respects_the_joint_limits():
     )
 
 
-def test_ik_uses_the_damping_argument():
-    """Heavy damping must visibly slow the solve; ignoring the argument makes them identical."""
+def test_ik_uses_the_damping_and_tolerance_arguments():
+    """Both knobs must be read. Ignoring either leaves the solves indistinguishable."""
     model, data = _fresh()
     light = lesson.ik_damped_least_squares(model, data, lesson.PALM_SITE,
                                            lesson.REACHABLE_TARGET, damping=0.05)
@@ -373,6 +486,27 @@ def test_ik_uses_the_damping_argument():
         "constant, or the IK_DAMPING global read directly)"
     )
     assert heavy["history"][1] < heavy["history"][0], "heavy damping should still make progress"
+    # `tol` is a parameter too. A loose tolerance must stop the loop sooner and leave a
+    # correspondingly larger residual; a hard-coded IK_TOL makes all three of these identical.
+    loose = lesson.ik_damped_least_squares(model, data, lesson.PALM_SITE,
+                                           lesson.REACHABLE_TARGET, tol=1e-1)
+    tight = lesson.ik_damped_least_squares(model, data, lesson.PALM_SITE,
+                                           lesson.REACHABLE_TARGET, tol=1e-6)
+    assert loose["converged"] and tight["converged"], (
+        f"tol=1e-1 converged={loose['converged']}, tol=1e-6 converged={tight['converged']} — "
+        "both are reachable"
+    )
+    assert loose["iterations"] < tight["iterations"], (
+        f"tol=1e-1 stopped after {loose['iterations']} iterations and tol=1e-6 after "
+        f"{tight['iterations']}. A looser tolerance must stop sooner, so an equal count means "
+        "the `tol` argument is being ignored — you are comparing the residual against the "
+        "IK_TOL global instead of against the `tol` you were passed"
+    )
+    assert loose["residual"] < 1e-1 and loose["residual"] > tight["residual"], (
+        f"stopping at tol=1e-1 left a residual of {loose['residual']:.3e} and stopping at "
+        f"tol=1e-6 left {tight['residual']:.3e} — the loose solve must stop while it is still "
+        "further away, and must still honour the tolerance it was given"
+    )
 
 
 RUBRIC = [
@@ -385,7 +519,8 @@ RUBRIC = [
     (test_analytic_jacobian_matches_mujocos_own_site_jacobian, 4,
      "mj_jac with point = the site's world position and body = model.site_bodyid[site_id]"),
     (test_analytic_jacobian_columns_are_indexed_by_dof, 2,
-     "allocate (3, model.nv) — nv columns, one per degree of freedom"),
+     "allocate (3, model.nv) — nv columns, one per degree of freedom, which is NOT model.nq "
+     "on a model with a ball or free joint"),
     (test_analytic_jacobian_refreshes_the_position_stage, 2,
      "call mj_forward inside the function: mj_jac reads data.cdof, which mj_comPos fills"),
     (test_finite_difference_agrees_with_analytic_within_tolerance, 5,
@@ -396,11 +531,13 @@ RUBRIC = [
     (test_finite_difference_touches_only_the_listed_dofs_and_restores_state, 3,
      "perturb a copy of the base pose, fill only the listed columns, restore data at the end"),
     (test_ik_converges_on_a_reachable_target, 5,
-     "e = target - position; dq = J.T @ solve(J @ J.T + lam^2 I, e); copy q_start"),
+     "e = target - position; dq = J.T @ solve(J @ J.T + lam^2 I, e) — lambda SQUARED; copy "
+     "q_start, and build `history` inside the function, never as a default argument"),
     (test_ik_reports_an_honest_residual_when_out_of_reach, 4,
-     "after the loop, measure the residual again at the final pose before reporting it"),
+     "after the loop, measure the residual again at the final pose before reporting it, and "
+     "never report converged=True for a pose you did not reach"),
     (test_ik_respects_the_joint_limits, 3,
      "np.clip(q[dofs] + dq, JOINT_LO[dofs], JOINT_HI[dofs]) after every step"),
-    (test_ik_uses_the_damping_argument, 3,
-     "read the `damping` parameter, not the IK_DAMPING global"),
+    (test_ik_uses_the_damping_and_tolerance_arguments, 3,
+     "read the `damping` and `tol` parameters, not the IK_DAMPING and IK_TOL globals"),
 ]

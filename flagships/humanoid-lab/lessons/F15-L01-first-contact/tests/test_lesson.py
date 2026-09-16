@@ -97,10 +97,15 @@ def test_com_height_matches_mujoco_reference():
     got = lesson.com_height(model, data)
     assert isinstance(got, float), f"expected a float, got {type(got).__name__}"
     reference = float(data.subtree_com[0][2])
+    mass = model.body_mass
     assert abs(got - reference) < 1e-9, (
-        f"got {got:.9f}, MuJoCo's whole-body COM is {reference:.9f} (root height is "
-        f"{float(data.qpos[2]):.9f}, the xpos-weighted answer is higher, the unweighted mean "
-        "sits between them)"
+        f"got {got:.6f}, MuJoCo's whole-body COM is {reference:.6f}. Each near miss names a "
+        f"different mistake, and all three are computed from this very pose: "
+        f"{float(data.qpos[2]):.6f} is the root height in qpos[2]; "
+        f"{float((mass * data.xpos[:, 2]).sum() / mass.sum()):.6f} weights data.xpos, the "
+        f"frame origins, where data.xipos belongs; "
+        f"{float(data.xipos[:, 2].mean()):.6f} is an unweighted mean of xipos, with "
+        "model.body_mass left out"
     )
 
 
@@ -159,6 +164,12 @@ def test_real_time_factor_shape_and_internal_consistency():
     assert report["steps"] == _expected_steps(model, asked), (
         f"steps was {report['steps']}, expected {_expected_steps(model, asked)}"
     )
+    assert not isinstance(report["steps"], float), (
+        f"steps came back as {type(report['steps']).__name__} ({report['steps']!r}) — it "
+        "counts mj_step calls, so it must be a whole number. math.ceil returns an int; "
+        "numpy's np.ceil returns a float that compares equal here and then breaks range() "
+        "and every index built from it downstream"
+    )
     assert abs(report["sim_seconds"] - report["steps"] * model.opt.timestep) < 1e-9, (
         f"sim_seconds was {report['sim_seconds']!r} for {asked} s asked; it must be "
         f"steps * timestep = {report['steps'] * model.opt.timestep!r}, derived from the steps "
@@ -189,6 +200,15 @@ def test_real_time_factor_is_measured_and_right_way_up():
         "the data handed in was never stepped — reset it, then step it, do not simulate a "
         "throwaway copy"
     )
+    # Two calls have now run on one `data`. If the reset happened, the clock reads exactly
+    # what the second call's own steps bought; if it did not, it still carries the first.
+    assert abs(data.time - longer["steps"] * model.opt.timestep) < 1e-9, (
+        f"after two measurements on the same data, data.time is {data.time} rather than the "
+        f"{longer['steps'] * model.opt.timestep} that the last call's {longer['steps']} steps "
+        "bought — the clock still carries the previous run, so mujoco.mj_resetData never "
+        "ran. Every measurement after the first then times an already-fallen, contact-heavy "
+        "pose, which is a different benchmark from the one you reported"
+    )
 
 
 RUBRIC = [
@@ -207,7 +227,8 @@ RUBRIC = [
     (test_com_height_reflects_written_state, 2,
      "a mass-weighted mean of world-frame positions translates with the whole body"),
     (test_real_time_factor_shape_and_internal_consistency, 2,
-     "return exactly the four documented keys, with sim_seconds = steps * timestep"),
+     "return exactly the four documented keys, sim_seconds = steps * timestep, steps a whole "
+     "number"),
     (test_real_time_factor_is_measured_and_right_way_up, 2,
-     "the factor is simulated seconds over wall seconds, timed with time.perf_counter"),
+     "mj_resetData first, then simulated seconds over wall seconds, timed with perf_counter"),
 ]

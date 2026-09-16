@@ -136,6 +136,9 @@ def measure(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Measurement:
       whether or not tracing happened to be running already when it was called.
     * the RSS reading is taken before *and* after, and the rise is clamped at 0.0, because a
       high-water mark cannot fall and a call that sets no new record legitimately shows 0.
+      `rss_hwm_mib` is the reading taken AFTER; only `rss_delta_mib` is a difference.
+    * `try`/`finally`, never `try`/`except`: whatever `fn` raises comes straight back out, so
+      a measured call can stand in for the plain one, and the clean-up still runs on the way.
     """
     tracemalloc.start()
     tracemalloc.reset_peak()
@@ -193,6 +196,23 @@ def _check_measure() -> None:
         "a near-zero value means you subtracted a baseline that belongs in rss_delta_mib"
     )
     assert small.rss_delta_mib >= 0.0, "rss_delta_mib must be clamped at 0.0, never negative"
+
+    class _Boom(RuntimeError):
+        pass
+
+    def _explode() -> None:
+        raise _Boom("this call was meant to fail")
+
+    try:
+        measure(_explode)
+    except _Boom:
+        pass
+    else:
+        raise AssertionError(
+            "measure() swallowed the exception _explode raised and returned a Measurement "
+            "anyway — that reports a cost for work that never finished. Catch nothing; put "
+            "the clock and the tracemalloc clean-up in a finally block instead"
+        )
     print("exercise 1 looks right — measure() reports the clock, Python's peak and the OS peak")
 
 
@@ -236,18 +256,27 @@ _try("blind-spot demo", _show_blind_spot)
 
 # %% [markdown]
 # ## 3. The floor you never asked for
+#
+# Measured where the repository's own gate measures it: in a fresh child interpreter.
+# `tools/execute.py` reads the child's own `RUSAGE_SELF` from inside it; from out here the
+# same peak arrives through `RUSAGE_CHILDREN`.
 
 # %%
 def measure_subprocess(snippet: str) -> tuple[float, float]:
-    """Run `snippet` in a fresh interpreter; return (wall seconds, peak child RSS in MiB)."""
-    before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    """Run `snippet` in a fresh interpreter; return (wall seconds, peak child RSS in MiB).
+
+    The figure returned is the absolute high-water mark over all children, not the rise
+    during this one. A difference would be the honest number if the mark could fall, and it
+    cannot: that is the trap this whole section is about, one level up. Running the snippets
+    in ascending order of cost is what keeps each reading its own.
+    """
     t0 = time.perf_counter()
     proc = subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True)
     wall = time.perf_counter() - t0
     after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     if proc.returncode != 0:
         raise RuntimeError(f"child failed: {proc.stderr.strip().splitlines()[-1:]}")
-    return wall, max(after - before, after) / RU_MAXRSS_DIVISOR
+    return wall, after / RU_MAXRSS_DIVISOR
 
 
 for _label, _snippet in (("a bare interpreter", "pass"),

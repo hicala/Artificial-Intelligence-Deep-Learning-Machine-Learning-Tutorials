@@ -25,10 +25,18 @@ Rules that matter in this particular lesson and are deliberate:
 * `test_completeness_rejects_empty_values` checks 0 and False as well as None and "". A
   `if not value` test rejects a recorded outcome of 0, which is a real answer in a scoring
   system; the exercise asks for emptiness, not falsiness.
+* Independent review, 2026-09-23. Each case below was added because a plausible wrong answer
+  scored 58/58 without it: the documented canonical bytes and digest recipe (a log only its
+  author's verifier can check is not evidence), a relink at index 0, a replayed entry, the
+  anchor compared before the walk, a one-entry anchor, one day past the retention floor, the
+  `as_of` and `minimum_days` arguments, a purge of the OLDEST entries, seqs versus list
+  positions, a decision naming an older model version, and coverage over the `required` that
+  was passed. Each reason word is also checked to appear alone, as the docstring promises.
 """
 import copy
 import importlib.util, os
-from datetime import date
+import hashlib
+from datetime import date, timedelta
 from pathlib import Path
 
 # CI grades solutions/lesson_solution.py; a student grades lesson.py. Same rubric, one file.
@@ -40,6 +48,12 @@ _spec.loader.exec_module(lesson)
 STREAM = lesson.EVENT_STREAM
 AS_OF = lesson.AS_OF
 HEXDIGITS = set("0123456789abcdef")
+REASON_WORDS = ("sequence", "prev_hash", "entry_hash")
+
+
+def _names_only(reason: str, word: str) -> bool:
+    """True when `reason` names `word` and neither of the other two reason words."""
+    return word in reason and not any(w in reason for w in REASON_WORDS if w != word)
 
 
 def _fresh_stream() -> list:
@@ -56,6 +70,13 @@ def _expected_trace_seqs(decision_id: str) -> list:
                if e.get("event_type") == "model_deployed"
                and e.get("payload", {}).get("model_version") in versions]
     return sorted(set(own) | set(context)) if own else []
+
+
+def _trace(decision_id: str) -> list:
+    """The trace the completeness tests grade on, built from the independent re-derivation
+    above, so a mistake in reconstruct_decision costs exercise 4's points and not 5's too."""
+    log = lesson.plain_log(STREAM)
+    return [log[i] for i in _expected_trace_seqs(decision_id)]
 
 
 def _expected_missing(decision_id: str) -> list:
@@ -101,6 +122,16 @@ def test_canonical_bytes_is_order_independent():
     )
     assert cb({"a": 1}) != cb({"a": 2}), "different values must serialise differently"
     assert cb({"a": 1}) != cb({"b": 1}), "different keys must serialise differently"
+    # The docstring pins the bytes, not only their order. Two machines that agree on key order
+    # but not on whitespace still hash the same event differently. ASCII-only input, so the
+    # ensure_ascii choice stays the student's.
+    for obj, want in (({"b": 1, "a": 2}, b'{"a":2,"b":1}'),
+                      ({"x": {"k": [1, 2]}, "n": None}, b'{"n":null,"x":{"k":[1,2]}}')):
+        assert cb(obj) == want, (
+            f"canonical_bytes({obj!r}) gave {cb(obj)!r}, not the documented {want!r} — "
+            "json.dumps puts a space after every ',' and ':' unless you pass separators, and "
+            "indent adds newlines; either makes your hashes differ from everyone else's"
+        )
 
 
 def test_canonical_bytes_round_trips():
@@ -174,6 +205,19 @@ def test_append_event_digest_covers_event_and_history():
         "the same event logged twice produced the same digest twice — include seq and "
         "prev_hash in the digest so position is part of what is signed"
     )
+    # The recipe is part of the entry format, because an inspector's verifier has to reproduce
+    # it: SHA-256 over canonical_bytes of exactly {"seq", "prev_hash", "event"}. Recomputed
+    # through the student's OWN canonical_bytes, so ensure_ascii stays their choice.
+    for entry in lesson.build_log(STREAM):
+        want = hashlib.sha256(lesson.canonical_bytes(
+            {"seq": entry["seq"], "prev_hash": entry["prev_hash"], "event": entry["event"]})
+        ).hexdigest()
+        assert entry["entry_hash"] == want, (
+            f"entry_hash at seq {entry['seq']} is not the SHA-256 hex digest of canonical_bytes "
+            "of the dict {'seq', 'prev_hash', 'event'} — leaving seq out, joining strings "
+            "together or picking another hash function verifies against your own verifier "
+            "and no one else's, so nobody can check a head you publish"
+        )
 
 
 # --- exercise 2: verify_chain ----------------------------------------------------------
@@ -206,9 +250,10 @@ def test_verify_chain_catches_an_edit():
             f"the edit at seq {target} was reported at seq {verdict.first_bad_seq} — return at "
             "the FIRST break, walking the entries in order"
         )
-        assert "entry_hash" in verdict.reason and "sequence" not in verdict.reason, (
-            f"the reason for an edited event must name entry_hash and nothing else, got "
-            f"{verdict.reason!r} — the numbering and the links are intact here"
+        assert _names_only(verdict.reason, "entry_hash"), (
+            f"the reason for an edited event must name entry_hash and neither 'sequence' nor "
+            f"'prev_hash', got {verdict.reason!r} — the numbering and the links are intact "
+            "here, and an inspector filtering on the other words would file this wrongly"
         )
     # A payload edit, not just an envelope one: the digest covers the whole event.
     deep = lesson.build_log(_fresh_stream())
@@ -240,10 +285,20 @@ def test_verify_chain_catches_a_deletion():
         # A deletion breaks the link as well as the numbering, so a verifier with no
         # contiguity check still fails the entry — for the wrong reason, and it sends an
         # inspector hunting a forgery instead of a purge job. Check the numbering first.
-        assert "sequence" in verdict.reason and "prev_hash" not in verdict.reason, (
-            f"a gap at index {target} was reported as {verdict.reason!r} — check "
-            "entry['seq'] == i BEFORE the link, and say 'sequence' in the reason"
+        assert _names_only(verdict.reason, "sequence"), (
+            f"a gap at index {target} was reported as {verdict.reason!r} — check the sequence "
+            "number BEFORE the link, and name 'sequence' and neither of the other two words"
         )
+    # The other numbering fault: an entry replayed into the log. Its seq runs BEHIND its
+    # index, which a check written as `seq > i` never sees; the link check then blames prev_hash.
+    replayed = lesson.build_log(_fresh_stream())
+    replayed.insert(6, copy.deepcopy(replayed[5]))
+    verdict = lesson.verify_chain(replayed)
+    assert (not verdict.intact and verdict.first_bad_seq == 6
+            and _names_only(verdict.reason, "sequence")), (
+        f"a copy of seq 5 replayed at index 6 came back as {verdict!r} — a sequence number "
+        "that runs backwards is as much a numbering fault as one that jumps: test != , not >"
+    )
 
 
 def test_verify_chain_catches_a_relink():
@@ -253,9 +308,18 @@ def test_verify_chain_catches_a_relink():
     assert not verdict.intact and verdict.first_bad_seq == 3, (
         f"re-pointing seq 3 at genesis must break the link check there, got {verdict!r}"
     )
-    assert "prev_hash" in verdict.reason and "sequence" not in verdict.reason, (
-        f"the reason must name prev_hash and only prev_hash, got {verdict.reason!r} — the "
-        "sequence numbers are intact here, so blaming them is a false finding"
+    assert _names_only(verdict.reason, "prev_hash"), (
+        f"the reason must name prev_hash and neither 'sequence' nor 'entry_hash', got "
+        f"{verdict.reason!r} — the numbering and this entry's own digest are not what broke"
+    )
+    rooted = lesson.build_log(_fresh_stream())
+    rooted[0]["prev_hash"] = "f" * 64
+    verdict = lesson.verify_chain(rooted)
+    assert (not verdict.intact and verdict.first_bad_seq == 0
+            and _names_only(verdict.reason, "prev_hash")), (
+        f"the first entry re-pointed away from GENESIS_HASH came back as {verdict!r} — the "
+        "link check applies at index 0 too; skip it there and this relink is reported as an "
+        "edited event"
     )
     swapped = lesson.build_log(_fresh_stream())
     swapped[5]["prev_hash"] = swapped[2]["entry_hash"]
@@ -279,6 +343,24 @@ def test_verify_chain_anchor():
     )
     assert not lesson.verify_chain([], expected_head="a" * 64).intact, (
         "an empty log does not satisfy an anchor pointing at anything but GENESIS_HASH"
+    )
+    one = lesson.build_log(STREAM[:1])
+    assert lesson.verify_chain(one, expected_head=one[0]["entry_hash"]).intact, (
+        "a one-entry log's head is that entry's entry_hash — GENESIS_HASH is the head only "
+        "when the log is EMPTY"
+    )
+    assert not lesson.verify_chain(one, expected_head=lesson.GENESIS_HASH).intact, (
+        "a one-entry log does not satisfy an anchor at GENESIS_HASH: its head is its entry"
+    )
+    # The head is compared only after a clean walk. A log with a localisable break must report
+    # the break, even when the anchor also disagrees.
+    broken = lesson.build_log(_fresh_stream())
+    broken[3]["prev_hash"] = lesson.GENESIS_HASH
+    verdict = lesson.verify_chain(broken, expected_head="f" * 64)
+    assert not verdict.intact and verdict.first_bad_seq == 3, (
+        f"a broken link at seq 3 checked against a wrong anchor came back as {verdict!r} — "
+        "walk the entries first and compare the head only when every entry passed: a break "
+        "tells an inspector where to look, and a head mismatch cannot"
     )
 
     forged_stream = _fresh_stream()
@@ -338,6 +420,28 @@ def test_retention_partition_and_boundary():
         f"expired={got['expired']} retained={got['retained']} — decide per entry; sorting the "
         "log and splitting it at a cut-off index gets this wrong"
     )
+    # Both sides of the floor: exactly on it is kept, one calendar day past it is not.
+    edge = lesson.plain_log([{"ts": lesson._ts(floor), "event_type": "on", "payload": {}},
+                             {"ts": lesson._ts(floor + 1), "event_type": "past", "payload": {}}])
+    got = lesson.retention_status(edge, AS_OF)
+    assert got["retained"] == [0] and got["expired"] == [1], (
+        f"expired={got['expired']} retained={got['retained']} — the entry one day PAST the "
+        "floor must expire. Compare age > minimum_days, not > minimum_days + 1, and take the "
+        "age in whole days from entry_date(): a datetime difference loses a day to the hour"
+    )
+    # The floor and the date are arguments. Using the module's constants instead passes every
+    # call made with the defaults and gets every other call wrong.
+    got = lesson.retention_status(mixed, AS_OF, minimum_days=1)
+    assert got["minimum_days"] == 1 and got["expired"] == [1, 2] and got["retained"] == [0], (
+        f"with minimum_days=1 got {got['minimum_days']}/{got['expired']}/{got['retained']} — "
+        "compare against the minimum_days you were passed, not RETENTION_MINIMUM_DAYS"
+    )
+    later = AS_OF + timedelta(days=floor)
+    got = lesson.retention_status(mixed, later)
+    assert got["as_of"] == later.isoformat() and got["expired"] == [0, 1, 2], (
+        f"as_of={got['as_of']} expired={got['expired']} — age each entry against the as_of "
+        "you were passed, not the module's AS_OF"
+    )
 
 
 def test_retention_scans_for_extremes():
@@ -376,6 +480,20 @@ def test_retention_finds_gaps():
         "the difference between len(log) and the largest seq"
     )
     assert holed["compliant"] is False, "a log with a hole punched in it is not compliant"
+    kept = [s for s in range(len(log)) if s not in (2, 9)]
+    assert sorted(holed["retained"] + holed["expired"]) == kept, (
+        f"with seqs 2 and 9 gone, retained + expired came to "
+        f"{sorted(holed['retained'] + holed['expired'])}, not the seqs still present {kept} — "
+        "report entry['seq'], not the position in the list: once entries are missing the two "
+        "differ"
+    )
+    front = [e for e in log if e["seq"] not in (0, 1)]
+    got = lesson.retention_status(front, AS_OF)
+    assert got["missing_seq"] == [0, 1] and got["compliant"] is False, (
+        f"seqs 0 and 1 were purged and missing_seq came back {got['missing_seq']} — the range "
+        "starts at 0, not at the smallest seq left: purging the OLDEST entries is still a "
+        "deletion from a chained log"
+    )
     # Removing two entries from NEAR the end shortens the list past the second gap, so
     # range(len(log)) stops one short of it and reports only the first.
     late = [e for e in log if e["seq"] not in (len(log) - 3, len(log) - 2)]
@@ -442,6 +560,24 @@ def test_reconstruct_pulls_in_deployment_context():
         f"got {got} — with no model_version referenced there is no context to add; do not "
         "fall back to every deployment in the log"
     )
+    # A rollback: v2 was deployed after v1, and the decision still ran on v1 — and names it in
+    # its SECOND entry, not its first.
+    rollback = lesson.plain_log([
+        {"ts": lesson._ts(9), "event_type": "model_deployed", "system_id": "s",
+         "payload": {"model_version": "v1"}},
+        {"ts": lesson._ts(5), "event_type": "model_deployed", "system_id": "s",
+         "payload": {"model_version": "v2"}},
+        {"ts": lesson._ts(1), "event_type": "note", "system_id": "s", "decision_id": "D-R",
+         "payload": {}},
+        {"ts": lesson._ts(1), "event_type": "inference_requested", "system_id": "s",
+         "decision_id": "D-R", "payload": {"model_version": "v1"}},
+    ])
+    got = [e["seq"] for e in lesson.reconstruct_decision(rollback, "D-R")]
+    assert got == [0, 2, 3], (
+        f"got {got}, expected [0, 2, 3] — collect the model_version from EVERY entry of the "
+        "decision, not only the first, and pull in the deployment of that version, not "
+        "whichever deployment happened to come last"
+    )
 
 
 def test_reconstruct_returns_entries_and_handles_unknown():
@@ -464,8 +600,7 @@ def test_reconstruct_returns_entries_and_handles_unknown():
 # --- exercise 5: completeness ----------------------------------------------------------
 
 def test_completeness_shape_and_spans():
-    log = lesson.plain_log(STREAM)
-    report = lesson.completeness_report(lesson.reconstruct_decision(log, "D-1001"))
+    report = lesson.completeness_report(_trace("D-1001"))
     assert set(report) == {"decision_id", "present", "missing", "coverage", "complete",
                            "first_seq", "last_seq"}, (
         f"keys were {sorted(report)} — return exactly the seven documented names"
@@ -489,9 +624,8 @@ def test_completeness_shape_and_spans():
 
 
 def test_completeness_envelope_and_payload():
-    log = lesson.plain_log(STREAM)
     for decision_id in ("D-1001", "D-1002", "D-1003", "D-1004"):
-        report = lesson.completeness_report(lesson.reconstruct_decision(log, decision_id))
+        report = lesson.completeness_report(_trace(decision_id))
         want_missing = _expected_missing(decision_id)
         assert report["missing"] == want_missing, (
             f"{decision_id}: missing={report['missing']}, expected {want_missing}"
@@ -549,15 +683,22 @@ def test_completeness_rejects_empty_values():
 
 
 def test_completeness_coverage_and_vacuous_case():
-    log = lesson.plain_log(STREAM)
     required = lesson.REQUIRED_FIELDS
     for decision_id in ("D-1001", "D-1002", "D-1003", "D-1004"):
-        report = lesson.completeness_report(lesson.reconstruct_decision(log, decision_id))
+        report = lesson.completeness_report(_trace(decision_id))
         want = (len(required) - len(_expected_missing(decision_id))) / len(required)
         assert abs(report["coverage"] - want) < 1e-9, (
             f"{decision_id}: coverage={report['coverage']}, expected {want} — it is "
             "len(present) / len(required), a fraction, not a percentage and not a count"
         )
+    solo = lesson.plain_log([{"ts": lesson._ts(1), "event_type": "x", "system_id": "loan",
+                              "decision_id": "D-Q", "payload": {"outcome": "approve"}}])
+    got = lesson.completeness_report(solo, required=("system_id", "outcome", "use_end"))
+    assert abs(got["coverage"] - 2 / 3) < 1e-9 and got["missing"] == ["use_end"], (
+        f"two of the three fields asked for are present, got coverage={got['coverage']} "
+        f"missing={got['missing']} — divide by len(required), the argument you were passed, "
+        "not by len(REQUIRED_FIELDS)"
+    )
     vacuous = lesson.completeness_report([], required=())
     assert vacuous["coverage"] == 1.0, (
         f"coverage over an empty requirement list is 1.0, got {vacuous['coverage']!r} — "
@@ -568,37 +709,43 @@ def test_completeness_coverage_and_vacuous_case():
 
 RUBRIC = [
     (test_canonical_bytes_is_order_independent, 3,
-     "json.dumps(obj, sort_keys=True, separators=(',', ':')).encode('utf-8')"),
+     "one json.dumps call that sorts keys at every level and drops the separator whitespace, "
+     "encoded as UTF-8 bytes"),
     (test_canonical_bytes_round_trips, 2,
      "the canonical form must still be JSON: json.loads(canonical_bytes(x)) == x"),
     (test_append_event_shape_and_links, 4,
      "seq is len(log); prev_hash is GENESIS_HASH or the previous entry_hash; append in place "
      "and return the entry"),
     (test_append_event_digest_covers_event_and_history, 4,
-     "hash canonical_bytes({'seq': ..., 'prev_hash': ..., 'event': ...}) — all three, so that "
-     "an edit, a reorder and a rewrite each move the digest"),
+     "SHA-256 over canonical_bytes of the dict of seq, prev_hash and event — all three, in "
+     "exactly that documented form, so an edit, a reorder and a rewrite each move the digest "
+     "and another verifier can reproduce it"),
     (test_verify_chain_accepts_a_clean_log, 2,
      "ChainVerdict(True, None, '') for a log you just built, and for an empty one"),
     (test_verify_chain_catches_an_edit, 3,
      "recompute each entry's digest from its own contents; never trust the stored value"),
     (test_verify_chain_catches_a_deletion, 3,
-     "check entry['seq'] == i first: a gap is a deletion. Dropping the LAST entry leaves no "
-     "gap, so that case must still verify"),
+     "test the sequence number against the index first, for any mismatch ahead or behind. "
+     "Dropping the LAST entry leaves no gap, so that case must still verify"),
     (test_verify_chain_catches_a_relink, 2,
-     "compare prev_hash against the IMMEDIATELY preceding entry's entry_hash"),
+     "compare prev_hash against the IMMEDIATELY preceding entry's entry_hash, and against "
+     "GENESIS_HASH at index 0"),
     (test_verify_chain_anchor, 4,
-     "after every entry passes, compare the last entry_hash against expected_head and report "
-     "first_bad_seq=None — a rewritten tail is internally perfect"),
+     "only after every entry passes, compare the last entry_hash (GENESIS_HASH only for an "
+     "empty log) against expected_head, and report first_bad_seq=None on a mismatch"),
     (test_retention_partition_and_boundary, 4,
-     "age > minimum_days is expired, age <= minimum_days is retained; decide per entry"),
+     "age in days from entry_date() against the as_of passed in; > minimum_days (the argument) "
+     "is expired, <= is retained; decide per entry"),
     (test_retention_scans_for_extremes, 3,
      "oldest_ts and newest_ts are min() and max() over the log, not log[0] and log[-1]"),
     (test_retention_finds_gaps, 3,
-     "missing_seq is range(0, max(seq) + 1) minus the seqs present, and [] for an empty log"),
+     "missing_seq is every number from 0 up to the largest seq present that is absent, and "
+     "[] for an empty log; report seqs, not list positions"),
     (test_reconstruct_selects_and_orders, 4,
      "select on event['decision_id'], then sort by 'seq' — never by 'ts'"),
     (test_reconstruct_pulls_in_deployment_context, 3,
-     "second pass: add the model_deployed entries whose model_version the decision names"),
+     "second pass: add the model_deployed entries whose model_version ANY of the decision's "
+     "entries names"),
     (test_reconstruct_returns_entries_and_handles_unknown, 2,
      "hand back the log entries themselves, and [] for a decision id that is not there"),
     (test_completeness_shape_and_spans, 3,
@@ -609,5 +756,6 @@ RUBRIC = [
     (test_completeness_rejects_empty_values, 3,
      "reject None, blank strings and empty containers; 0 and False are recorded values"),
     (test_completeness_coverage_and_vacuous_case, 3,
-     "coverage is len(present)/len(required), and 1.0 when nothing is required"),
+     "coverage is len(present)/len(required) over the required argument, and 1.0 when "
+     "nothing is required"),
 ]

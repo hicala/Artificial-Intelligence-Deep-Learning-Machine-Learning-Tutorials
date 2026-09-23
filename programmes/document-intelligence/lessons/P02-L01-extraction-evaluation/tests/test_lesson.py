@@ -22,10 +22,18 @@ These rules matter in this particular lesson and are deliberate:
   the two differ by a factor of three. Pooling the counts is a different, defensible metric —
   and it is not the one the docstring asks for, because it lets the field on every page bury
   the rare field a regulator asks about.
-* `test_modes_are_ordered_on_the_real_corpus` is the only case that touches the lesson's own
-  180-document corpus. It is deterministic (fixed seeds, no clock, no I/O) and it catches a
-  scorer that ignores its `mode` argument entirely — which every hand-built case above would
-  otherwise let through, since each of them is checked under a single mode.
+* `test_modes_are_ordered_on_the_real_corpus` and the last block of
+  `test_confusion_by_field_type_is_complete` are the only cases that touch the lesson's own
+  180-document corpus. Both are deterministic (fixed seeds, no clock, no I/O). The first catches
+  a scorer that ignores its `mode` argument entirely, which the hand-built cases above would let
+  through, since each of them is checked under a single mode.
+* `test_score_field_counts_and_ratios` is deliberately ASYMMETRIC (fp != fn). With fp == fn,
+  precision equals recall, so a scorer with the two formulas swapped, or with F1 taken as the
+  arithmetic rather than the harmonic mean, scores exactly what the right one does.
+* Several cases pin a rule the corpus never exercises but the docstring states outright: the
+  lone-comma rule in money, the FIRST run of digits in an integer, popping every trailing legal
+  form and only trailing ones, the inclusive fuzzy threshold, the full (doc_id, field)
+  tie-break. Each was a measured survivor: a mutant that broke it scored full marks.
 * Tolerances on the corpus-level case are wide bands, not equalities. They are there to pin an
   ORDERING that no correct implementation can violate, not to freeze a particular number.
 """
@@ -67,6 +75,23 @@ def test_normalise_money():
         assert got == want, f"normalise_value({raw!r}, 'money') = {got!r}, expected {want!r}"
 
 
+def test_normalise_money_lone_comma():
+    cases = {
+        "1234,50": "1234.50",          # lone comma, two digits after it: decimal
+        "1234,5": "1234.50",           # lone comma, ONE digit after it: still decimal --
+                                       # a thousands group always has three digits
+        "€1,234": "1234.00",           # lone comma, three digits after it: thousands
+        "EUR 12,345,678": "12345678.00",  # several commas, none decimal
+    }
+    for raw, want in cases.items():
+        got = lesson.normalise_value(raw, "money")
+        assert got == want, (
+            f"normalise_value({raw!r}, 'money') = {got!r}, expected {want!r}. When a comma is "
+            "the ONLY separator it is a decimal comma if one or two digits follow it and end the "
+            "number, and a thousands separator otherwise. Treating every lone comma the same way, "
+            "accepting only exactly two digits, or not anchoring to the end gets one of these wrong.")
+
+
 def test_normalise_date():
     cases = {
         "2026-03-04": "2026-03-04",
@@ -80,6 +105,12 @@ def test_normalise_date():
         got = lesson.normalise_value(raw, "date")
         assert got == want, (f"normalise_value({raw!r}, 'date') = {got!r}, expected {want!r} — "
                              "day comes before month in a slashed date here")
+    for raw, want in {"4/3/2026": "2026-03-04", "28/2/2025": "2025-02-28"}.items():
+        got = lesson.normalise_value(raw, "date")
+        assert got == want, (
+            f"normalise_value({raw!r}, 'date') = {got!r}, expected {want!r}. This is the "
+            "extractor's own house style: a slashed date with an unpadded day or month. Accept "
+            "one or two digits for each, still reading the day first.")
     swapped = lesson.normalise_value("11/02/2026", "date")
     assert swapped == "2026-02-11", (
         f"normalise_value('11/02/2026', 'date') = {swapped!r}: 11 February, not 2 November. "
@@ -94,6 +125,10 @@ def test_normalise_id_and_integer():
     assert lesson.normalise_value("30", "integer") == "30"
     assert lesson.normalise_value("net 30 days", "integer") == "30", "first run of digits"
     assert lesson.normalise_value("007", "integer") == "7", "as an int, so no leading zeros"
+    got = lesson.normalise_value("net 30, or 45 for exports", "integer")
+    assert got == "30", (
+        f"normalise_value('net 30, or 45 for exports', 'integer') = {got!r}: the FIRST run of "
+        "digits only. '3045' means every digit was concatenated; '45' means the last run won.")
 
 
 def test_normalise_text_drops_legal_form():
@@ -104,12 +139,16 @@ def test_normalise_text_drops_legal_form():
         "  Kestrel   Freight  Inc ": "kestrel freight",
         "Hollandse Kaasunie N.V.": "hollandse kaasunie",
         "Sable & Finch LLP": "sable finch llp",   # LLP is not in COMPANY_SUFFIXES: leave it
+        "Nordwind Logistik GmbH & Co. KG": "nordwind logistik",  # three trailing forms, all go
+        "Co-Op Haulage Ltd": "co op haulage",     # a leading "co" is part of the name: keep it
     }
     for raw, want in cases.items():
         got = lesson.normalise_value(raw, "text")
         assert got == want, (f"normalise_value({raw!r}, 'text') = {got!r}, expected {want!r} — "
-                             "lower case, punctuation out, whitespace collapsed, then drop "
-                             "trailing tokens that are in COMPANY_SUFFIXES and nothing else")
+                             "lower case, punctuation out, whitespace collapsed, then keep "
+                             "popping the LAST token while it is in COMPANY_SUFFIXES — popping "
+                             "only one misses 'GmbH & Co. KG', and filtering suffix words "
+                             "anywhere in the name eats a leading 'Co'")
 
 
 def test_normalise_empty_and_unparseable():
@@ -160,6 +199,19 @@ def test_match_fuzzy_is_confined_to_text():
             "things. Gate the fuzzy branch on field_type == 'text'.")
 
 
+def test_match_fuzzy_threshold_is_inclusive():
+    gold = "Harbourline Shipping Ltd"        # normalises to 20 characters
+    at_threshold = "Harbeurlina Shippimg"    # three substitutions: similarity exactly 0.85
+    below = "Harbeurlina Shyppimg"           # four substitutions: similarity 0.80
+    assert lesson.similarity(lesson.normalise_value(at_threshold, "text"),
+                             lesson.normalise_value(gold, "text")) == lesson.FUZZY_THRESHOLD
+    assert lesson.match_value(at_threshold, gold, "text", "fuzzy"), (
+        "a similarity EXACTLY at FUZZY_THRESHOLD was rejected. The docstring says 'at or "
+        "above': compare with >=, not >.")
+    assert not lesson.match_value(below, gold, "text", "fuzzy"), \
+        "a similarity below FUZZY_THRESHOLD must not match"
+
+
 def test_match_rejects_empty_and_unknown_modes():
     for mode in lesson.MATCH_MODES:
         assert not lesson.match_value("", "EUR", "id", mode), "an empty prediction never matches"
@@ -185,12 +237,18 @@ def test_score_field_counts_and_ratios():
         _row("D3", {}, {"currency": "GBP"}),                    # fp: spurious
         _row("D4", {}, {}),                                     # neither
         _row("D5", {"currency": "GBP"}, {"currency": "GBP"}),   # tp
+        _row("D6", {"currency": "EUR"}, {}),                    # fn: missed
     ]
     s = lesson.score_field(rows, "currency", "normalised")
-    assert (s.tp, s.fp, s.fn) == (2, 1, 1), f"expected tp=2 fp=1 fn=1, got {s.tp} {s.fp} {s.fn}"
-    assert abs(s.precision - 2 / 3) < 1e-9, f"precision is tp/(tp+fp), got {s.precision}"
-    assert abs(s.recall - 2 / 3) < 1e-9, f"recall is tp/(tp+fn), got {s.recall}"
-    assert abs(s.f1 - 2 / 3) < 1e-9, f"f1 is the harmonic mean, got {s.f1}"
+    assert (s.tp, s.fp, s.fn) == (2, 1, 2), f"expected tp=2 fp=1 fn=2, got {s.tp} {s.fp} {s.fn}"
+    assert abs(s.precision - 2 / 3) < 1e-9, (
+        f"precision is tp/(tp+fp) = 2/3 here, got {s.precision:.4f}"
+        + (" — that is tp/(tp+fn): precision and recall are the wrong way round"
+           if abs(s.precision - 1 / 2) < 1e-9 else ""))
+    assert abs(s.recall - 1 / 2) < 1e-9, f"recall is tp/(tp+fn) = 1/2 here, got {s.recall:.4f}"
+    assert abs(s.f1 - 4 / 7) < 1e-9, (
+        f"f1 is the harmonic mean 2PR/(P+R) = 4/7 here, got {s.f1:.4f}"
+        + (" — that is the arithmetic mean (P+R)/2" if abs(s.f1 - 7 / 12) < 1e-9 else ""))
     assert s.field == "currency" and s.mode == "normalised", \
         "a FieldScore carries the field and mode it was computed under"
 
@@ -309,6 +367,20 @@ def test_confusion_by_field_type_is_complete():
         "of them, so the integer row must show both spurious extractions and true negatives")
 
 
+def test_confusion_honours_mode():
+    # One non-empty cell, and totals taken over the whole table, so this case grades the mode
+    # and nothing else: a table with holes or the wrong keys loses its points in the case above.
+    rows = [_row("D1", {"invoice_id": "INV-1"}, {"invoice_id": "INV1"})]
+    for mode, want in (("exact", (0, 1)), ("normalised", (1, 0))):
+        t = lesson.confusion_by_field_type(rows, mode)
+        got = tuple(sum(row.get(lab, 0) for row in t.values()) for lab in ("correct", "wrong_value"))
+        assert got == want, (
+            f"'INV1' against 'INV-1' under mode {mode!r} counted correct={got[0]} "
+            f"wrong_value={got[1]}; expected correct={want[0]} wrong_value={want[1]}. "
+            "confusion_by_field_type must pass its OWN mode argument to classify_cell, not a "
+            "mode of its choosing.")
+
+
 # --- exercise 5: the review queue -------------------------------------------------------
 
 def test_review_queue_orders_by_confidence():
@@ -332,6 +404,12 @@ def test_review_queue_tie_break_is_deterministic():
         "ascending puts D1 before D2, and 'counterparty' first alphabetically. Without a "
         "deterministic tie-break two runs of the same policy queue different work.")
     assert lesson.review_queue(rows, 4) == lesson.review_queue(rows, 4), "and it is stable"
+    fields = sorted(FIELDS)
+    want = tuple(("D1", f) for f in fields) + (("D2", fields[0]), ("D2", fields[1]))
+    got = lesson.review_queue(rows, len(fields) + 2)
+    assert got == want, (
+        f"got {got}. Ties break on doc_id FIRST, then field: every cell of D1 comes before any "
+        "cell of D2. Sorting on (field, doc_id) alternates the two documents instead.")
     assert lesson.review_queue(rows, 4)[:1] == first, "a bigger budget extends the same queue"
 
 
@@ -395,8 +473,11 @@ def test_apply_reviews_leaves_the_input_alone():
 RUBRIC = [
     (test_normalise_money, 5,
      "strip the symbol and the code, decide which separator is decimal, then format to 2dp"),
+    (test_normalise_money_lone_comma, 2,
+     "a lone comma is decimal when one or two digits follow it and end the number"),
     (test_normalise_date, 5,
-     "three surface forms, one ISO output; a slashed date in this corpus is day-first"),
+     "three surface forms, one ISO output; a slashed date in this corpus is day-first, and "
+     "its day and month may have one digit or two"),
     (test_normalise_id_and_integer, 3,
      "ids: upper case, alphanumerics only. integers: the first run of digits, as an int"),
     (test_normalise_text_drops_legal_form, 4,
@@ -410,10 +491,13 @@ RUBRIC = [
     (test_match_fuzzy_is_confined_to_text, 5,
      "the fuzzy branch runs only when field_type == 'text'; on every other type, fall back to "
      "normalised equality"),
+    (test_match_fuzzy_threshold_is_inclusive, 2,
+     "'at or above FUZZY_THRESHOLD' is >=, not >"),
     (test_match_rejects_empty_and_unknown_modes, 3,
      "an empty side is never a match, and an unrecognised mode raises ValueError"),
     (test_score_field_counts_and_ratios, 5,
-     "count per cell, then divide once at the end, guarding both denominators"),
+     "count per cell, then divide once at the end, guarding both denominators; precision "
+     "divides by predictions, recall by gold values, and F1 is their harmonic mean"),
     (test_score_field_wrong_value_counts_twice, 5,
      "a prediction that is present and does not match is a false positive AND a false negative"),
     (test_score_field_zero_denominators, 3,
@@ -429,6 +513,8 @@ RUBRIC = [
     (test_confusion_by_field_type_is_complete, 5,
      "pre-fill every field type with every label at 0, then add one per cell; two fields of "
      "the same type share a row"),
+    (test_confusion_honours_mode, 2,
+     "pass the mode you were given through to classify_cell"),
     (test_review_queue_orders_by_confidence, 4,
      "sort every cell on (confidence, doc_id, field) ascending and take the first `budget`"),
     (test_review_queue_tie_break_is_deterministic, 3,
@@ -440,5 +526,6 @@ RUBRIC = [
     (test_apply_reviews_corrects_routed_cells, 4,
      "a reviewed cell takes the gold value and confidence 1.0; nothing else changes"),
     (test_apply_reviews_leaves_the_input_alone, 4,
-     "build new dicts — dict(record['pred']) — instead of writing into the ones you were given"),
+     "copy each record's pred and conf dicts before you change them, instead of writing into "
+     "the ones you were given"),
 ]

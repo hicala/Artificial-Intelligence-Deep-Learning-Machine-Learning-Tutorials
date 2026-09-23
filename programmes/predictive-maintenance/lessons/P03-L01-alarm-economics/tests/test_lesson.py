@@ -9,9 +9,14 @@ Rules that matter in this particular lesson and are deliberate:
   written as a Python loop and one written with stride tricks are both correct; what is
   graded is that position t never depends on a sample after t. `test_causal_median_is_causal`
   proves that by mutating the tail of the input and re-reading the head.
-* `test_health_index_baseline_is_raw` exists because the docstring states a requirement —
-  baseline from the RAW rms — that every plausible implementation would otherwise satisfy by
-  accident on smooth data. It is graded on a step input where the two routes differ by 5x.
+* `test_health_index_baseline` exists because the docstring states three requirements of the
+  baseline — the RAW rms, its MEDIAN, over exactly hours [0, baseline_hours) — that every
+  plausible implementation would otherwise satisfy by accident on smooth data. Each is graded
+  on an input where the right and the wrong route differ: a step (raw against smoothed, 5x), a
+  single shock inside the baseline window (median against mean, 5x), and a level change one
+  hour after the window closes (exclusive against inclusive bound, 2.5x). A mean baseline and
+  a one-hour-long window both used to score 100% while moving the counts on the lesson's own
+  fleet.
 * `test_classify_outcomes_lead_time` is the case that separates this from ordinary binary
   classification. An implementation that ignores `lead_hours` passes every other outcome
   test, because on the lesson's own fleet most caught failures are caught early.
@@ -25,7 +30,11 @@ Rules that matter in this particular lesson and are deliberate:
   DIRECTION and a conservative magnitude of the result — cost-optimal strictly below
   accuracy-optimal, at least twice the money, strictly more failures accepted — not the exact
   thresholds, so a student who reasonably rounds the health index elsewhere is not failed for
-  landing one grid step away.
+  landing one grid step away. It builds the fleet, the feature settings, the grid and the
+  prices from the rubric's OWN constants, never from the student's module: section 7 tells the
+  student the prices "are here to be edited", and a correct solution whose SCENARIO had been
+  edited as invited used to lose these five points with a hint pointing at a bug it did not
+  have.
 * memory and timing are not graded here; tools/execute.py owns those.
 """
 import importlib.util, os
@@ -40,6 +49,13 @@ lesson = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lesson)
 
 C = lesson.Counts
+
+# The lesson's published settings, pinned here so that editing them in the notebook — which
+# section 7 invites for the prices — can never change what the rubric grades.
+_FLEET = dict(seed=20260916, n_machines=300, n_hours=360, burst_len=64, n_failures=18,
+              lead_hours=48)
+_BASELINE_HOURS, _WINDOW, _LEAD_HOURS = 72, 11, 48
+_GRID = np.round(np.arange(1.00, 4.01, 0.05), 2)
 
 
 def _rms(values) -> float:
@@ -115,13 +131,25 @@ def test_causal_median_is_causal():
 
 
 def test_causal_rolling_median_validates_window():
-    for bad in (0, -1, -7):
+    for bad in (0, -1, -7, 2.5):
         try:
             lesson.causal_rolling_median(np.array([1.0, 2.0]), bad)
         except ValueError:
             pass
+        except NotImplementedError:
+            raise
+        except Exception as exc:
+            raise AssertionError(
+                f"window={bad} raised {type(exc).__name__}, not ValueError: the docstring asks "
+                "for a ValueError whenever window is not a positive integer, checked before any "
+                "slicing"
+            ) from None
         else:
-            raise AssertionError(f"window={bad} must raise ValueError")
+            raise AssertionError(
+                f"window={bad} must raise ValueError" + (
+                    " — a window of 2.5 hours is not a window; int(window) would silently "
+                    "smooth over 2 and report nothing" if bad == 2.5 else "")
+            )
 
 
 # --- exercise 3: health_index ----------------------------------------------------------
@@ -142,6 +170,20 @@ def test_health_index_values():
         f"sit at 1.0; got a range of {np.asarray(pair).min():.3f} to "
         f"{np.asarray(pair).max():.3f}. Each machine is normalised by ITS OWN baseline"
     )
+    # A step after the baseline, smoothed with window 3: the median of [1, 1, 9] is still 1,
+    # so the step shows one hour LATE. Unsmoothed rms shows it on time; a mean shows 3.67.
+    # Graded against the student's OWN causal_rolling_median, so that a bug in exercise 2 is
+    # charged to exercise 2 alone and this case isolates whether health_index smooths at all.
+    step = np.array([[[1.0]] * 4 + [[9.0]] * 4])
+    smoothed = np.asarray(lesson.health_index(step, baseline_hours=4, window=3), dtype=float)
+    theirs = np.asarray(lesson.causal_rolling_median(np.array([[1.0] * 4 + [9.0] * 4]), 3),
+                        dtype=float)
+    assert np.allclose(smoothed, theirs, equal_nan=True), (
+        f"got {smoothed.round(3).tolist()}; with a baseline of 1.0 this must equal your own "
+        f"causal_rolling_median(rms, 3), {theirs.round(3).tolist()} — with a correct smoother, "
+        "[[1, 1, 1, 1, 1, 9, 9, 9]]. A 9 at hour 4 means the rms was never smoothed; a 3.667 "
+        "there means health_index smoothed with a mean of its own"
+    )
     ramp = np.concatenate([np.full((1, 20, 4), 3.0), np.full((1, 20, 4), 6.0)], axis=1)
     doubled = lesson.health_index(ramp, baseline_hours=20, window=1)
     assert np.isclose(doubled[0, -1], 2.0), (
@@ -150,7 +192,7 @@ def test_health_index_values():
     )
 
 
-def test_health_index_baseline_is_raw():
+def test_health_index_baseline():
     step = np.array([[[1.0]] * 4 + [[9.0]] * 4])
     got = lesson.health_index(step, baseline_hours=8, window=3)
     assert np.isclose(got[0, 0], 0.2), (
@@ -161,10 +203,35 @@ def test_health_index_baseline_is_raw():
     assert np.isclose(got[0, -1], 1.8), (
         f"health_index[0, -1] = {got[0, -1]:.4f}, expected 9/5 = 1.8"
     )
+    # One forklift strike inside the baseline window. The median ignores it; a mean does not.
+    # Read at the LAST hour, where every window up to 4 wide holds only 2.0, so a smoothing
+    # bug from exercise 2 cannot reach this case.
+    shocked = np.array([[[1.0]] * 4 + [[21.0]] + [[2.0]] * 4])
+    median_based = lesson.health_index(shocked, baseline_hours=5, window=3)
+    assert np.isclose(median_based[0, -1], 2.0), (
+        f"health_index[0, -1] = {median_based[0, -1]:.4f}, expected 2.0: the raw rms over the "
+        "first 5 hours is [1, 1, 1, 1, 21], whose MEDIAN is 1.0. A 0.4 means the baseline was "
+        "a mean, which one shock in the baseline window drags up five-fold"
+    )
+    # The window is [0, baseline_hours): hour `baseline_hours` itself is not in it.
+    bound = np.array([[[2.0]] * 2 + [[8.0]] * 4])
+    exclusive = lesson.health_index(bound, baseline_hours=3, window=3)
+    assert np.isclose(exclusive[0, -1], 4.0), (
+        f"health_index[0, -1] = {exclusive[0, -1]:.4f}, expected 8/2 = 4.0: the baseline is "
+        "the median of hours 0, 1 and 2 only, [2, 2, 8]. A 1.6 means hour 3 was included too — "
+        "the slice is [:baseline_hours], not [:baseline_hours + 1]"
+    )
 
 
 def test_health_index_validates_baseline_hours():
     doubling = np.array([[[1.0], [1.0], [2.0], [2.0]]])
+    try:
+        lesson.health_index(doubling, baseline_hours=1, window=2)
+    except ValueError:
+        raise AssertionError(
+            "baseline_hours=1 is the smallest valid baseline — the first hour alone — and must "
+            "be accepted. The guard rejects values below 1, not 1 itself"
+        ) from None
     for bad in (0, -5):
         try:
             lesson.health_index(doubling, baseline_hours=bad, window=1)
@@ -216,7 +283,17 @@ def test_classify_outcomes_buckets():
     )
     assert sum(quad) == 5, f"every machine is counted exactly once; the four add to {sum(quad)}"
     nothing = lesson.classify_outcomes(np.array([-1, -1, -1]), np.array([-1, -1, -1]), 10)
-    assert (int(nothing.tp), int(nothing.fp), int(nothing.fn), int(nothing.tn)) == (0, 0, 0, 3)
+    quiet = (int(nothing.tp), int(nothing.fp), int(nothing.fn), int(nothing.tn))
+    assert quiet == (0, 0, 0, 3), (
+        f"three machines that neither failed nor alarmed are three true negatives, got {quiet}"
+    )
+    at_zero = lesson.classify_outcomes(np.array([-1]), np.array([0]), 10)
+    zero = (int(at_zero.tp), int(at_zero.fp), int(at_zero.fn), int(at_zero.tn))
+    assert zero == (0, 0, 1, 0), (
+        f"a machine that failed at hour 0 and never alarmed is a missed failure, (0, 0, 1, 0); "
+        f"got {zero}. Hour 0 is a real hour and -1 is the only 'never failed' marker — a true "
+        "negative here means the test was fail_hour > 0 rather than fail_hour >= 0"
+    )
     everything = lesson.classify_outcomes(np.array([0, 0]), np.array([-1, -1]), 10)
     assert (int(everything.fp), int(everything.tn)) == (2, 0), (
         "two healthy machines that both alarm are two false positives"
@@ -265,17 +342,35 @@ def test_sweep_thresholds():
         assert field.shape == (3,), (
             f"counts.{name} should be one entry per threshold, shape (3,), got {field.shape}"
         )
-    assert np.asarray(swept.tp).tolist() == [1, 1, 0], f"tp = {np.asarray(swept.tp).tolist()}"
+    assert np.asarray(swept.tp).tolist() == [1, 1, 0], (
+        f"tp = {np.asarray(swept.tp).tolist()}, expected [1, 1, 0]. [0, 0, 0] means the "
+        "caller's lead_hours=0 never reached classify_outcomes, so its default of 48 hours "
+        "applied to a failure at hour 1"
+    )
     assert np.asarray(swept.fp).tolist() == [1, 0, 0], (
         f"fp = {np.asarray(swept.fp).tolist()}, expected [1, 0, 0] — machine 2 reaches 2.0, "
         "so it alarms at a threshold of 1.5 and not at 2.5"
     )
-    assert np.asarray(swept.fn).tolist() == [0, 0, 1]
-    assert np.asarray(swept.tn).tolist() == [1, 2, 2]
+    assert np.asarray(swept.fn).tolist() == [0, 0, 1], (
+        f"fn = {np.asarray(swept.fn).tolist()}, expected [0, 0, 1]: the failing machine peaks "
+        "at 3.0, so only the threshold of 4.0 misses it"
+    )
+    assert np.asarray(swept.tn).tolist() == [1, 2, 2], (
+        f"tn = {np.asarray(swept.tn).tolist()}, expected [1, 2, 2] — the two survivors, less "
+        "any that alarmed at that threshold"
+    )
     totals = sum(np.asarray(getattr(swept, n)) for n in ("tp", "fp", "fn", "tn"))
     assert np.all(totals == 3), f"each threshold must account for all 3 machines: {totals}"
     # A rising threshold can never raise more alarms.
     assert np.all(np.diff(np.asarray(swept.fp)) <= 0), "fp must be non-increasing in threshold"
+    for name in ("tp", "fp", "fn", "tn"):
+        field = getattr(swept, name)
+        assert isinstance(field, np.ndarray) and np.issubdtype(field.dtype, np.integer), (
+            f"counts.{name} is a {type(field).__name__}"
+            + (f" of {field.dtype}" if isinstance(field, np.ndarray) else "")
+            + "; the docstring promises integer arrays. Pre-allocating with np.zeros(n) gives "
+            "float64 — pass dtype=int, or build the array from a list of ints"
+        )
 
 
 # --- exercises 7 and 8: the curves -----------------------------------------------------
@@ -288,7 +383,10 @@ def test_roc_points():
         f"fpr = {np.asarray(fpr).tolist()}, expected [0.1, 0.0]. roc_points returns "
         "(fpr, tpr) in that order — a first element of 0.75 means they are swapped"
     )
-    assert np.allclose(tpr, [0.75, 0.0]), f"tpr = {np.asarray(tpr).tolist()}"
+    assert np.allclose(tpr, [0.75, 0.0]), (
+        f"tpr = {np.asarray(tpr).tolist()}, expected [0.75, 0.0] — caught failures over ALL "
+        "failures, tp / (tp + fn)"
+    )
 
 
 def test_roc_points_zero_denominators():
@@ -298,7 +396,10 @@ def test_roc_points_zero_denominators():
         f"an all-zero Counts gave {np.asarray(fpr).tolist()} and "
         f"{np.asarray(tpr).tolist()}; both rates are defined as 0.0 there, not NaN"
     )
-    assert np.allclose(fpr, 0.0) and np.allclose(tpr, 0.0)
+    assert np.allclose(fpr, 0.0) and np.allclose(tpr, 0.0), (
+        f"an all-zero Counts must give 0.0 for both rates; got {np.asarray(fpr).tolist()} and "
+        f"{np.asarray(tpr).tolist()} — the convention is when_zero=0.0 for both"
+    )
     no_failures = C(tp=np.array([0]), fp=np.array([2]), fn=np.array([0]), tn=np.array([8]))
     fpr2, tpr2 = lesson.roc_points(no_failures)
     assert np.allclose(tpr2, 0.0) and np.allclose(fpr2, 0.2), (
@@ -316,10 +417,13 @@ def test_pr_points():
         f"recall = {np.asarray(rec).tolist()}, expected [0.75, 0.5]. pr_points returns "
         "(recall, precision) in that order"
     )
-    assert np.allclose(prec, [0.75, 0.25]), f"precision = {np.asarray(prec).tolist()}"
+    assert np.allclose(prec, [0.75, 0.25]), (
+        f"precision = {np.asarray(prec).tolist()}, expected [0.75, 0.25] — caught failures "
+        "over everything flagged, tp / (tp + fp); the true negatives are not in it"
+    )
 
 
-def test_pr_points_precision_convention():
+def test_pr_points_conventions():
     silent = C(tp=np.array([0]), fp=np.array([0]), fn=np.array([4]), tn=np.array([96]))
     rec, prec = lesson.pr_points(silent)
     assert np.all(np.isfinite(prec)), (
@@ -331,6 +435,17 @@ def test_pr_points_precision_convention():
         f"convention; got {np.asarray(prec).tolist()}"
     )
     assert np.allclose(rec, 0.0), "flagging nothing means recall 0.0"
+    # The other zero denominator: a fleet in which nothing failed has no recall to report.
+    no_failures = C(tp=np.array([0]), fp=np.array([2]), fn=np.array([0]), tn=np.array([8]))
+    rec2, prec2 = lesson.pr_points(no_failures)
+    assert np.allclose(rec2, 0.0), (
+        f"with no failures in the fleet recall is 0.0 by the stated convention, as in "
+        f"roc_points; got {np.asarray(rec2).tolist()}. Precision's 1.0 convention is for "
+        "'nothing flagged' only — the two when_zero values differ"
+    )
+    assert np.allclose(prec2, 0.0), (
+        f"two alarms and no failures is precision 0/2 = 0.0, got {np.asarray(prec2).tolist()}"
+    )
 
 
 # --- exercises 9-11: the economics -----------------------------------------------------
@@ -402,7 +517,10 @@ def test_best_operating_point_picks():
         f"counts must be the confusion matrix at the chosen threshold, sliced out of the "
         f"swept arrays; got tp={by_cost.counts.tp}, fp={by_cost.counts.fp}"
     )
-    assert (int(by_acc.counts.tp), int(by_acc.counts.fp)) == (1, 0)
+    assert (int(by_acc.counts.tp), int(by_acc.counts.fp)) == (1, 0), (
+        f"the accuracy-optimal counts are the second column, tp=1 and fp=0; got "
+        f"tp={by_acc.counts.tp}, fp={by_acc.counts.fp}"
+    )
 
 
 def test_best_operating_point_ties_and_objectives():
@@ -445,14 +563,16 @@ def test_best_operating_point_rejects_mismatch():
 # --- the result, end to end ------------------------------------------------------------
 
 def test_the_gap_is_real():
-    bursts, fail_hour = lesson.generate_fleet()
-    health = lesson.health_index(bursts)
-    counts = lesson.sweep_thresholds(health, fail_hour, lesson.THRESHOLDS)
-    by_cost = lesson.best_operating_point(lesson.THRESHOLDS, counts, lesson.SCENARIO, "cost")
-    by_acc = lesson.best_operating_point(lesson.THRESHOLDS, counts, lesson.SCENARIO,
-                                         "accuracy")
+    bursts, fail_hour = lesson.generate_fleet(**_FLEET)
+    health = lesson.health_index(bursts, baseline_hours=_BASELINE_HOURS, window=_WINDOW)
+    counts = lesson.sweep_thresholds(health, fail_hour, _GRID, lead_hours=_LEAD_HOURS)
+    # The lesson's published scenario, not lesson.SCENARIO, which the student may have edited.
+    prices = lesson.CostModel(planned=9_000.0, unplanned=180_000.0, false_alarm=6_000.0)
+    by_cost = lesson.best_operating_point(_GRID, counts, prices, "cost")
+    by_acc = lesson.best_operating_point(_GRID, counts, prices, "accuracy")
     assert by_cost.threshold < by_acc.threshold, (
-        f"on this fleet and this cost model the cost-optimal threshold ({by_cost.threshold}) "
+        f"on this fleet and the lesson's published cost model the cost-optimal threshold "
+        f"({by_cost.threshold}) "
         f"must sit BELOW the accuracy-optimal one ({by_acc.threshold}): a missed failure "
         "costs twenty planned interventions, so cost buys alarms that accuracy will not"
     )
@@ -482,41 +602,46 @@ def test_the_gap_is_real():
 
 RUBRIC = [
     (test_burst_rms, 4,
-     "np.sqrt(np.mean(x**2, axis=-1)) — np.std subtracts the mean first and RMS does not"),
+     "square, average along the last axis only, then square-root — np.std subtracts the mean "
+     "first and RMS does not"),
     (test_causal_rolling_median_values, 5,
      "y[t] = median(x[max(0, t-window+1) : t+1]); the first positions use a growing window"),
     (test_causal_median_is_causal, 4,
      "the slice must END at t. A centred window reads samples that have not happened yet"),
     (test_causal_rolling_median_validates_window, 2,
-     "a window of zero or less is a ValueError, not an empty slice"),
+     "a window that is not a whole number of at least 1 is a ValueError — not an empty slice, "
+     "not a TypeError from slicing, and not a silent int()"),
     (test_health_index_values, 5,
-     "smoothed rms divided by each machine's own baseline, keeping shape (machines, 1)"),
-    (test_health_index_baseline_is_raw, 3,
-     "the baseline is the median of the RAW rms over the first baseline_hours, not of the "
-     "smoothed series"),
+     "causally smoothed rms divided by each machine's own baseline, one baseline per machine "
+     "as a column"),
+    (test_health_index_baseline, 3,
+     "the baseline is the MEDIAN of the RAW rms over exactly hours 0 .. baseline_hours - 1 — "
+     "not the smoothed series, not a mean, not one hour more"),
     (test_health_index_validates_baseline_hours, 2,
-     "a non-positive baseline_hours is a ValueError"),
+     "a baseline_hours below 1 is a ValueError; 1 itself is valid"),
     (test_alarm_times, 5,
      "first index where health >= threshold, and -1 where there is no crossing at all — "
      "argmax alone returns 0 for a row that never crosses"),
     (test_classify_outcomes_buckets, 4,
      "a survivor that alarms is a false positive; a failure that does not alarm in time is a "
-     "false negative; the four counts add to the fleet size"),
+     "false negative; -1 alone means 'never' — hour 0 is an hour; the four counts add to the "
+     "fleet size"),
     (test_classify_outcomes_lead_time, 5,
      "fail_hour - alarm_hour >= lead_hours is the catch condition; exactly lead_hours counts"),
     (test_classify_outcomes_validates_lead, 2,
      "a negative lead_hours is a ValueError"),
     (test_sweep_thresholds, 4,
-     "loop the thresholds, call alarm_times then classify_outcomes, stack the four counts "
-     "into arrays"),
+     "loop the thresholds, call alarm_times then classify_outcomes with the caller's "
+     "lead_hours, and return the four counts as integer arrays"),
     (test_roc_points, 3,
      "return (fpr, tpr): fp/(fp+tn) first, tp/(tp+fn) second"),
     (test_roc_points_zero_denominators, 3,
      "a rate with a zero denominator is 0.0, never NaN — safe_ratio is given to you"),
     (test_pr_points, 3,
      "return (recall, precision): tp/(tp+fn) first, tp/(tp+fp) second"),
-    (test_pr_points_precision_convention, 3,
-     "precision is 1.0 when nothing is flagged: safe_ratio(tp, tp + fp, 1.0)"),
+    (test_pr_points_conventions, 3,
+     "precision is 1.0 when nothing is flagged, recall is 0.0 when nothing failed — two "
+     "different when_zero values for safe_ratio"),
     (test_expected_cost, 4,
      "tp*planned + fn*unplanned + fp*false_alarm, and nothing for the true negatives"),
     (test_accuracy, 3,

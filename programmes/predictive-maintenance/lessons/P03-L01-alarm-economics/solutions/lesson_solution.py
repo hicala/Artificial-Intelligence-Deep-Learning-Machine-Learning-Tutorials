@@ -60,7 +60,7 @@ print("python", sys.version.split()[0], "· numpy", np.__version__,
 
 # The fleet. 300 machines, sampled hourly for 15 days, with a short vibration burst captured
 # each hour. Eighteen of them fail inside the window; the rest do not. That 6% base rate is
-# the single most important number in this notebook, and section 7 is about why.
+# the single most important number in this notebook, and sections 8 and 10 are about why.
 N_MACHINES = 300
 N_HOURS = 360
 BURST_LEN = 64
@@ -368,7 +368,8 @@ _try("exercise 1", _check_burst_rms)
 # </details>
 # <details><summary>💡 Hint 2 — the approach, in words</summary>
 #
-# Reject a `window` below 1 with `ValueError` before anything else. Then, for each position
+# Reject a `window` that is not a whole number of at least 1 with `ValueError`, before
+# anything else — a `window` of 2.5 must not quietly become 2. Then, for each position
 # along the last axis, take the slice that ENDS at `t` and starts `window - 1` earlier, never
 # before zero, and take its median along that axis so a 2-D input is smoothed row by row. A
 # plain loop over `t` is fine: correctness is the point here, not speed.
@@ -422,13 +423,21 @@ def _check_causal_rolling_median() -> None:
     assert two_d.shape == (2, 3) and np.allclose(two_d[1], [5.0, 5.0, 5.0]), (
         f"on a 2-D input the smoothing runs along the LAST axis per row; got {two_d!r}"
     )
-    for bad in (0, -3):
+    for bad in (0, -3, 2.5):
         try:
             causal_rolling_median(np.array([1.0, 2.0]), bad)
         except ValueError:
             pass
+        except NotImplementedError:
+            raise
+        except Exception as exc:
+            raise AssertionError(
+                f"window={bad} raised {type(exc).__name__}, not ValueError — check that window "
+                "is a whole number of at least 1 before you slice anything"
+            ) from None
         else:
-            raise AssertionError(f"window={bad} must raise ValueError, not be tolerated")
+            raise AssertionError(f"window={bad} must raise ValueError, not be tolerated or "
+                                 "silently rounded")
     print("exercise 2 looks right — causal median smoothing, no future leakage")
 
 
@@ -459,7 +468,7 @@ def _show_median_versus_mean() -> None:
           f"{int((mean[30:] > 1.05).sum())} hours; the median for "
           f"{int((med[30:] > 1.05).sum())}.")
     print("every one of those elevated hours is an opportunity to raise an alarm about a")
-    print("forklift. That is what a nuisance alarm is, and section 6 puts a price on it.")
+    print("forklift. That is what a nuisance alarm is, and section 7 puts a price on it.")
 
 
 _try("median vs mean", _show_median_versus_mean, needs=("exercise 2",))
@@ -858,7 +867,9 @@ def _check_sweep_thresholds() -> None:
     swept = sweep_thresholds(h, np.array([1, -1]), np.array([2.0, 4.0]), lead_hours=0)
     assert isinstance(swept, Counts), "sweep_thresholds must return a Counts"
     assert np.asarray(swept.tp).tolist() == [1, 0], (
-        f"tp over the two thresholds should be [1, 0], got {np.asarray(swept.tp).tolist()}"
+        f"tp over the two thresholds should be [1, 0], got {np.asarray(swept.tp).tolist()}. "
+        "[0, 0] means lead_hours=0 never reached classify_outcomes, so its default of "
+        "LEAD_HOURS applied to a failure at hour 1"
     )
     assert np.asarray(swept.fn).tolist() == [0, 1], (
         "the failing machine stops being caught once the threshold passes its peak"
@@ -891,7 +902,10 @@ def _check_pr_points() -> None:
     demo = Counts(tp=np.array([3, 0]), fp=np.array([1, 0]), fn=np.array([1, 4]),
                   tn=np.array([9, 10]))
     rec, prec = pr_points(demo)
-    assert np.allclose(rec, [0.75, 0.0]), f"recall should be [0.75, 0.0], got {rec}"
+    assert np.allclose(rec, [0.75, 0.0]), (
+        f"recall should be [0.75, 0.0], got {np.asarray(rec).tolist()}. [0.75, 1.0] is the "
+        "precision: pr_points returns (recall, precision) in that order"
+    )
     assert np.allclose(prec, [0.75, 1.0]), (
         f"precision should be [0.75, 1.0], got {np.asarray(prec).tolist()}. The second "
         "threshold flags nothing at all: that is precision 1.0 by convention, not 0.0 and "
@@ -950,7 +964,7 @@ _try("curves", _plot_curves, needs=_FOR_CURVES)
 # ## 7. Exercises 9-11 — put a price on every cell of the matrix
 #
 # Here is the move the curves cannot make for you. Each of the four outcomes has a different
-# cost, and they are not within an order of magnitude of each other:
+# cost, and one of them dwarfs the rest:
 #
 # - A **planned intervention** is a scheduled swap in a scheduled window. It costs parts,
 #   labour and a production slot you chose.
@@ -1206,6 +1220,8 @@ def _show_the_gap() -> None:
     print(f"it scores {100 * (by_acc.accuracy - by_cost.accuracy):.1f} accuracy points higher "
           f"and lets {int(by_acc.counts.fn) - int(by_cost.counts.fn)} more machines fail "
           "unplanned.")
+    print(f"under these prices one missed failure costs as much as "
+          f"{SCENARIO.unplanned / SCENARIO.planned:.0f} planned interventions.")
 
 
 _try("the gap", _show_the_gap, needs=_FOR_CURVES + ("exercise 11",))
@@ -1240,18 +1256,19 @@ _try("cost curve", _plot_cost_curve,
 # and one set of counts. Nothing about the *model* differs between them. What differs is the
 # question asked of the same curve.
 #
-# Accuracy is dominated by the true negatives, and there are hundreds of them: with a 6% base
-# rate, a threshold so high it never alarms already scores in the nineties. Cost is dominated
-# by the false negatives, because one of them costs twenty planned interventions. Optimising
-# the first buys you a number to put in a slide; optimising the second buys you the outcome
-# the plant is paying for.
+# Accuracy is dominated by the true negatives, and there are hundreds of them: a threshold so
+# high it never alarms scores one minus the base rate, which on a rare event is already close
+# to perfect — section 10 prints it for this fleet. Cost is dominated by the false negatives,
+# because each one is priced at many planned interventions; the gap cell above printed how
+# many. Optimising the first buys you a number to put in a slide; optimising the second buys
+# you the outcome the plant is paying for.
 #
 # Two details worth noticing in your own table before moving on:
 #
-# - The cost-optimal point **still misses some failures**, and that is correct. Catching the
-#   last few would mean dropping the threshold into the healthy population's noise, and the
-#   false alarms bought on the way down cost more than the failures they prevent. "Catch
-#   everything" is not the goal either.
+# - At these prices the cost-optimal point **still misses some failures**, and that is
+#   correct. Catching the last few would mean dropping the threshold into the healthy
+#   population's noise, and the false alarms bought on the way down cost more than the
+#   failures they prevent. "Catch everything" is not the goal either.
 # - The accuracy-optimal point has a **near-perfect false-alarm record**. It is a genuinely
 #   quiet, well-behaved alarm system. It is also the expensive one.
 
@@ -1292,9 +1309,9 @@ _try("scenarios", _show_scenarios, needs=_FOR_CURVES + ("exercise 11",))
 # - **Counting a late alarm as a catch.** An alarm with no lead time prevents nothing. If
 #   your metric does not know about `LEAD_HOURS`, it will happily reward a detector that
 #   announces failures as they happen.
-# - **Optimising accuracy on a rare event.** At a 6% base rate, "never alarm" already scores
-#   94%. Any metric that treats one missed failure and one false alarm as the same mistake is
-#   the wrong metric.
+# - **Optimising accuracy on a rare event.** "Never alarm" scores one minus the base rate,
+#   which on a rare event is already close to perfect. Any metric that treats one missed
+#   failure and one false alarm as the same mistake is the wrong metric.
 # - **Reading the operating point off the ROC curve.** The ROC curve is invariant to the base
 #   rate and knows nothing about cost. Two plants with identical ROC curves and different
 #   economics need different thresholds.
@@ -1337,11 +1354,11 @@ _try("null detector", _show_the_null_detector,
 #    - (b) be unimplementable at hour `t`, because five of its inputs have not happened yet
 #    - (c) be fine, but slower
 #
-# 2. A colleague reports 96% accuracy on this fleet and proposes to ship that threshold. The
-#    strongest single objection is:
-#    - (a) 96% is not high enough for industrial use
-#    - (b) with a 6% base rate, refusing to ever alarm already scores about 94%, so the
-#          number is nearly uninformative about whether anything was detected
+# 2. A colleague reports the accuracy of section 8's accuracy-optimal threshold and proposes
+#    to ship that threshold. The strongest single objection is:
+#    - (a) that accuracy is not high enough for industrial use
+#    - (b) refusing ever to alarm already scores one minus the base rate — section 10 prints
+#          it — so the number is nearly uninformative about whether anything was detected
 #    - (c) accuracy should have been computed per hour rather than per machine
 #
 # 3. An alarm fires 12 hours before a failure when the crew needs 48. Under this lesson's
@@ -1393,10 +1410,10 @@ _try("handover note", _handover, needs=_FOR_CURVES + ("exercise 11",))
 #
 # You now have the pieces a condition-monitoring programme is actually assembled from: a
 # causal feature, a decision rule with a lead-time requirement, a sweep, and a cost function
-# that turns a curve into a choice. Module 5 of this programme replaces the fixed threshold
-# with a remaining-useful-life estimate and asks the same economic question of a distribution
-# rather than a point. Module 7 asks what happens to all of this when the plant network will
-# not let your model talk to anything.
+# that turns a curve into a choice. Module 5 of this programme replaces the health index with
+# a remaining-useful-life distribution, and module 6 asks the same economic question of that
+# distribution rather than of a point. Module 7 asks what happens to all of this when the
+# plant network will not let your model talk to anything.
 #
 # The habit to carry forward is the one this lesson is built around: **the model and the
 # operating point are two separate deliverables, and only one of them is yours to choose
@@ -1457,10 +1474,11 @@ if __name__ == "__main__":
 #    information the plant will not have, so the improvement is not transferable. Everything
 #    in an online detector must be causal, the baseline included.
 #
-# 2. (b). With 18 failures in 300 machines, a detector that never raises an alarm scores
-#    282/300 = 94%. The notebook prints that figure from the fleet itself in section 10.
-#    A metric on which the useless detector already scores 94 and the best one scores 96 is
-#    not measuring the thing that matters. (a) is a judgement with nothing behind it and (c)
+# 2. (b). A detector that never raises an alarm is right about every survivor, so it scores
+#    one minus the base rate. The notebook prints that figure from the fleet itself in section
+#    10, and the accuracy-optimal threshold in section 8 beats it by only a few points. A
+#    metric on which the useless detector is already that close to the best one is not
+#    measuring the thing that matters. (a) is a judgement with nothing behind it and (c)
 #    changes the denominator without changing the base-rate problem.
 #
 # 3. (b). Nothing was prevented: the crew needed 48 hours and got 12, so the machine failed
@@ -1478,4 +1496,6 @@ if __name__ == "__main__":
 # 5. (c). The detector has not changed, so retraining (b) answers a question nobody asked.
 #    But the prices have, and the threshold is a function of the prices: a ten-fold rise in
 #    the cost of a missed failure with no change in the cost of a false alarm buys more
-#    alarms, which means a lower threshold. Section 9 runs exactly this experiment.
+#    alarms, which means a lower threshold: missed failures only grow as the threshold rises,
+#    so a dearer miss can move the optimum down or leave it put, never up. Section 9 runs the
+#    same experiment with a smaller rise (its "critical" row), and the threshold falls.

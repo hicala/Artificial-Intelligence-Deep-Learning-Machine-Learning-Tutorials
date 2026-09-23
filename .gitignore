@@ -1,0 +1,29 @@
+# generated, never hand-committed
+dist/
+.ipynb_checkpoints/
+# lesson.ipynb IS committed. It is generated from lesson.py by tools/notebooks.py, but it is
+# also the artefact a student actually opens -- in Colab, Kaggle, Binder or local Jupyter --
+# and a repository of notebooks that ships no notebooks helps nobody. `notebooks.py --check`
+# fails the build if a committed .ipynb has drifted from the lesson.py it came from.
+__pycache__/
+*.pyc
+# build products of the C/C++ lessons
+*.o
+*.dSYM/
+lesson_bin
+solutions/lesson_bin
+# per-lesson build directories: binaries and generated test data. tools/execute.py deletes
+# them before every run because a stale binary can point at a dead library path. 8.5 MiB of
+# them (two Mach-O executables, six generated CSVs) were once committed by a `git add -A`.
+build/
+# environment
+.venv/
+.DS_Store
+# iCloud Drive sync duplicates. This tree lives under ~/Documents, which iCloud syncs, and a
+# build running while it syncs leaves copies named "lesson_bin 2", "assets 3" and so on. They
+# are never wanted: the build products are ignored above and the asset directories are real.
+lesson_bin [0-9]
+assets [0-9]
+*.o [0-9]
+# NOTE: solutions/ and tests/ are deliberately NOT ignored. They are version-controlled and
+# excluded from the student bundle by tools/build_student_bundle.py (QUALITY.md gate 7).

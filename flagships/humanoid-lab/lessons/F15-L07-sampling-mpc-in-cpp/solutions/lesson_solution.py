@@ -34,6 +34,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Callable
 
 import mujoco
 import numpy as np
@@ -64,19 +65,27 @@ MODEL_PATH = LESSON_DIR / MODEL_REL
 # thing or no comparison between them means anything.
 W_ANGLE, W_CART, W_THETADOT, W_XDOT, W_CTRL = 10.0, 1.0, 0.05, 0.05, 0.01
 
-_BUILD = None
+_BUILD = None   # (the source's modification time it was built from, ok, compiler output)
 
 
 def build(verbose: bool = True):
-    """Compile the C++ source with make. Cached: the compiler runs once per session."""
+    """Compile the C++ source with make. Cached, but keyed on the source's modification time:
+    save an edit to lesson.cpp and the next check cell you run rebuilds before it runs, so
+    "fill it in, then re-run this cell" is literally all it takes."""
     global _BUILD
-    if _BUILD is None:
+    try:
+        stamp = (LESSON_DIR / CPP_SRC).stat().st_mtime_ns
+    except OSError:  # a missing source: let make report it, once
+        stamp = None
+    if _BUILD is None or _BUILD[0] != stamp:
+        # After an edit, -B forces the compile: make compares whole seconds on some systems,
+        # and a save in the same second as the last build would otherwise look up to date.
         proc = subprocess.run(
-            ["make", "-C", str(LESSON_DIR), f"PYTHON={sys.executable}",
-             f"SRC={CPP_SRC}", f"BIN={BIN}"],
+            ["make", "-C", str(LESSON_DIR), *(["-B"] if _BUILD is not None else []),
+             f"PYTHON={sys.executable}", f"SRC={CPP_SRC}", f"BIN={BIN}"],
             capture_output=True, text=True, timeout=600)
-        _BUILD = (proc.returncode == 0, (proc.stdout + proc.stderr).strip())
-    ok, out = _BUILD
+        _BUILD = (stamp, proc.returncode == 0, (proc.stdout + proc.stderr).strip())
+    _, ok, out = _BUILD
     if verbose:
         print("build OK" if ok else "BUILD FAILED\n" + out)
     return ok, out
@@ -136,6 +145,62 @@ def stage_cost(scratch, u: float) -> float:
     xd, thd = float(scratch.qvel[0]), float(scratch.qvel[1])
     return (W_ANGLE * (1.0 - math.cos(th)) + W_CART * x * x
             + W_THETADOT * thd * thd + W_XDOT * xd * xd + W_CTRL * u * u)
+
+
+# The five exercises, in the order the progress board in the last cell lists them.
+_EXERCISES = {
+    "exercise 1": "sample_controls, in lesson.cpp",
+    "exercise 2": "rollout_cost, in lesson.cpp",
+    "exercise 3": "refit_mean, in lesson.cpp",
+    "exercise 4": "python_rollout_cost, in this notebook",
+    "exercise 5": "rollout_budget, in this notebook",
+}
+# label -> "passed" | "failed" | "not started": the latest verdict of every check that has
+# run. The progress board in the last cell reads it.
+_STATUS: dict = {}
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple = ()) -> None:
+    """Run a check, or a demo that depends on your code, without derailing the notebook.
+
+    A stub you have not filled in yet simply says so. A wrong answer prints the check's own
+    message — which names the likely mistake — and the notebook carries on, so one broken
+    exercise never hides the feedback on the others. Nothing is swallowed: every verdict is
+    recorded in `_STATUS`, and the last cell exits non-zero if any check came back wrong when
+    this file runs as a script.
+
+    `needs` names the exercises a demo consumes. Until each of them has passed its own check,
+    the demo says which one it is waiting for and skips, instead of failing on its behalf.
+    """
+    waiting = [n for n in needs if _STATUS.get(n) != "passed"]
+    if waiting:
+        _STATUS.pop(label, None)
+        one = len(waiting) == 1
+        names = [f"{n} ({_EXERCISES[n]})" for n in waiting] if len(waiting) <= 2 else waiting
+        names = names[0] if one else ", ".join(names[:-1]) + " and " + names[-1]
+        print(f"{label}: skipped — it needs {names} to pass first. Finish "
+              f"{'that' if one else 'those'}, re-run "
+              + ("its check cell" if one else "their check cells") + ", then re-run this one.")
+        return
+    try:
+        check()
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        # A C++ stub names itself on the way out; a Python stub raises with no message.
+        stub = str(exc).split(" — ")[0].replace("NOT IMPLEMENTED: ", "").strip()
+        if stub:
+            print(f"{label}: not implemented yet — lesson.cpp reports that {stub}. Fill it "
+                  "in, then re-run this cell.")
+        else:
+            print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+    except AssertionError as exc:
+        _STATUS[label] = "failed"
+        print(f"{label}: FAILED — {exc}")
+    except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
+        print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
 
 
 build()
@@ -224,7 +289,7 @@ def _check_sampling() -> None:
 
 
 if _IS_MAIN:
-    _check_sampling()
+    _try("exercise 1", _check_sampling)
 
 
 # %% [markdown]
@@ -267,7 +332,7 @@ def _check_rollout() -> None:
 
 
 if _IS_MAIN:
-    _check_rollout()
+    _try("exercise 2", _check_rollout)
 
 
 # %% [markdown]
@@ -302,7 +367,7 @@ def _check_refit() -> None:
 
 
 if _IS_MAIN:
-    _check_refit()
+    _try("exercise 3", _check_refit)
 
 
 # %% [markdown]
@@ -365,8 +430,9 @@ def _check_python_rollout() -> None:
           f"relative gap {rel:.1e}")
 
 
+# It compares your Python with your C++ rollout_cost, so it waits for exercise 2.
 if _IS_MAIN:
-    _check_python_rollout()
+    _try("exercise 4", _check_python_rollout, needs=("exercise 2",))
 
 
 # %% [markdown]
@@ -474,7 +540,7 @@ def _check_budget() -> None:
 
 
 if _IS_MAIN:
-    _check_budget()
+    _try("exercise 5", _check_budget)
 
 
 # %% [markdown]
@@ -521,7 +587,10 @@ def report() -> None:
           f"  {cpp['rollouts_per_second']:9,.0f} rollouts/s")
     print(f"  Python {py['wall_seconds'] * 1e3:8.1f} ms  {py['steps_per_second']:12,.0f} steps/s"
           f"  {py['rollouts_per_second']:9,.0f} rollouts/s")
-    print(f"  C++ is {ratio:.1f}x faster on the same mj_step calls")
+    # The ratio is a timing, so it is printed beside the two timings it divides: this run's
+    # figure, not a constant — and a line that visibly moves from run to run.
+    print(f"  C++ is {ratio:.1f}x faster on the same mj_step calls "
+          f"({py['wall_seconds'] * 1e3:.1f} ms / {cpp['wall_seconds'] * 1e3:.1f} ms, this run)")
 
     hz = swing["control_hz"]
     n, h = int(swing["samples"]), int(swing["horizon"])
@@ -567,8 +636,9 @@ if _IS_MAIN:
 
 # %%
 # The payoff, end to end. Every number this prints is produced by the code above.
+# It consumes all five exercises; until each has passed, it names the ones it is waiting for.
 if _IS_MAIN:
-    report()
+    _try("the payoff", report, needs=tuple(_EXERCISES))
 
 # %% [markdown]
 # ## Self-check answer key
@@ -602,3 +672,28 @@ if _IS_MAIN:
 # proportional to the horizon: doubling the horizon halves the affordable sample count. At
 # 1,200,000 steps/s and 100 Hz that is 300 samples at horizon 40 and 150 at horizon 80. Note
 # this is the trade-off the final table in section 9 walks along.
+
+# %%
+# Your progress board. It reads the verdict each check cell recorded the last time it ran, so
+# after you fix an exercise, re-run that exercise's check cell and then this one.
+def _progress_board() -> list:
+    """Print one line per exercise, then the tally. Returns the labels that came back wrong."""
+    marks = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+    print("\nprogress board")
+    for label, what in _EXERCISES.items():
+        state = _STATUS.get(label, "not started")
+        print(f"  {marks[state]} {label}  {what:<38s} {state}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    print(f"\n{done} of {len(_EXERCISES)} exercises complete")
+    return [label for label, state in _STATUS.items() if state == "failed"]
+
+
+if _IS_MAIN:
+    _failed = _progress_board()
+    # A stub you have not reached yet is not a failure. A check that ran and came back wrong
+    # is: in a script or under CI it ends the run non-zero, so a green exit code cannot paper
+    # over it. Inside a notebook kernel the same verdict is a printed line, not a traceback.
+    if _failed and "ipykernel" not in sys.modules:
+        raise SystemExit("checks failed: " + ", ".join(_failed))
+    if _failed:
+        print("checks failed: " + ", ".join(_failed) + " — each printed its reason above")

@@ -119,6 +119,81 @@ def make_test():
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 
 
+# The notebook's guard. Every check, and every table that runs your code, goes through _try:
+# an unfilled stub says so, a wrong answer prints its check's hint and the notebook carries
+# on, and a table that needs an exercise you have not finished names it and skips. The
+# progress board in the last cell reads the verdicts it records.
+_BOARD = {                      # label -> what it grades, in the order the board lists them
+    "exercise 1": "actuator_addresses in lesson.c",
+    "exercise 2": "pd_ctrl in lesson.c",
+    "exercise 3": "run_loop in lesson.c",
+    "exercise 4": "python_pd_loop",
+    "exercise 5": "loop_overhead",
+    "self-check": "the five questions in section 11",
+}
+_STATUS: dict = {}              # label -> "passed" | "failed" | "not started"
+
+
+def _unfinished(exc: BaseException) -> str:
+    """Say which stub stopped a check. The binary names its own C stub; Python's say nothing,
+    so the function that raised is named instead."""
+    msg = str(exc).strip()
+    if msg.startswith("NOT IMPLEMENTED: ") and " is still a stub" in msg:
+        name = msg[len("NOT IMPLEMENTED: "):].split(" is still a stub")[0]
+        return (f"{name} in lesson.c is still a stub; fill it in, save the file, then re-run "
+                "this cell (it rebuilds). `make test` in section 2 says what each one expects.")
+    if msg:
+        return msg
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    name = tb.tb_frame.f_code.co_name if tb is not None else "a function above"
+    return f"{name}() is still a stub; fill it in above, then re-run this cell."
+
+
+def _try(label: str, check, needs: tuple = ()):
+    """Run a check, or a table that depends on your code, without derailing the notebook.
+
+    A stub you have not filled in yet simply says so. A wrong answer prints the check's own
+    message — which names the likely mistake — and the notebook carries on, so one broken
+    exercise never hides the feedback on the others. A table given `needs` waits until those
+    exercises have passed, and names the one it is waiting for. Nothing is swallowed: every
+    verdict is recorded in _STATUS, and the last cell turns any failure into a non-zero exit
+    whenever this file runs as a script. Returns what the check returned, or None.
+
+    Each call rebuilds the binary first (make does nothing if lesson.c has not changed), so
+    after you save lesson.c, re-running a check cell tests what the file holds now.
+    """
+    global _BUILD
+    waiting = [n for n in needs if _STATUS.get(n) != "passed"]
+    if waiting:
+        _STATUS.pop(label, None)
+        names = [f"{n} ({_BOARD[n]})" for n in waiting]
+        one = len(names) == 1
+        names = names[0] if one else ", ".join(names[:-1]) + " and " + names[-1]
+        print(f"{label}: skipped — it runs your code from {names}, which "
+              f"{'has' if one else 'have'} not passed yet. Finish {'it' if one else 'them'}, "
+              f"re-run {'its check cell' if one else 'their check cells'}, then this one.")
+        return None
+    _BUILD = None
+    try:
+        result = check()
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        print(f"{label}: not started yet — {_unfinished(exc)}")
+        return None
+    except AssertionError as exc:
+        _STATUS[label] = "failed"
+        print(f"{label}: FAILED — {exc}")
+        return None
+    except Exception as exc:  # a half-finished implementation, or a build that failed
+        _STATUS[label] = "failed"
+        print(f"{label}: raised {type(exc).__name__}: {exc}")
+        return None
+    _STATUS[label] = "passed"
+    return result
+
+
 if _IS_MAIN:
     build()
 
@@ -146,6 +221,7 @@ if _IS_MAIN:
 
 # %%
 if _IS_MAIN:
+    _BUILD = None
     _code, _out = make_test()
     print(_out)
     print(f"exit code {_code}  (0 = all pass, 2 = something is still a stub, 1 = a real failure)")
@@ -181,7 +257,7 @@ def _check_addresses() -> None:
 
 
 if _IS_MAIN:
-    _check_addresses()
+    _try("exercise 1", _check_addresses)
 
 
 # %% [markdown]
@@ -218,7 +294,7 @@ def _check_pd_ctrl() -> None:
 
 
 if _IS_MAIN:
-    _check_pd_ctrl()
+    _try("exercise 2", _check_pd_ctrl)
 
 
 # %% [markdown]
@@ -247,7 +323,7 @@ def _check_run_loop() -> None:
 
 
 if _IS_MAIN:
-    _check_run_loop()
+    _try("exercise 3", _check_run_loop)
 
 
 # %% [markdown]
@@ -266,13 +342,18 @@ def droop_report() -> list:
     return out
 
 
-if _IS_MAIN:
+def _show_droop() -> None:
+    table = droop_report()
     print(f"  {'act':>3} {'final error':>13} {'qfrc_bias':>11} {'bias/kp':>13} {'ratio':>8}")
-    for _r in droop_report():
-        print(f"  {_r['actuator']:>3} {_r['final_error']:>13.9f} {_r['qfrc_bias']:>11.4f} "
-              f"{_r['bias_over_kp']:>13.9f} {_r['ratio']:>8.4f}")
+    for r in table:
+        print(f"  {r['actuator']:>3} {r['final_error']:>13.9f} {r['qfrc_bias']:>11.4f} "
+              f"{r['bias_over_kp']:>13.9f} {r['ratio']:>8.4f}")
     print("\n  the last column is the measurement: steady-state error IS the gravitational "
           "load divided by kp.")
+
+
+if _IS_MAIN:
+    _try("the droop table", _show_droop, needs=("exercise 1", "exercise 2", "exercise 3"))
 
 # %% [markdown]
 # ## 7. Exercise 4 — the same loop, in Python
@@ -395,7 +476,7 @@ def _check_python_loop() -> None:
 
 
 if _IS_MAIN:
-    _check_python_loop()
+    _try("exercise 4", _check_python_loop)
 
 
 # %% [markdown]
@@ -442,7 +523,7 @@ def _check_overhead() -> None:
 
 
 if _IS_MAIN:
-    _check_overhead()
+    _try("exercise 5", _check_overhead)
 
 
 # %% [markdown]
@@ -559,10 +640,49 @@ def _check_self_check(answers: dict = None) -> None:
     print("self-check: all five right")
 
 
-# %%
-if __name__ == "__main__":
+def _self_check_marked() -> None:
+    """Mark SELF_CHECK, but treat a sheet with no letters on it yet as not started."""
+    if all(str(v).strip() == "?" for v in SELF_CHECK.values()):
+        raise NotImplementedError("put your five letters into SELF_CHECK above, then re-run "
+                                  "this cell.")
     _check_self_check()
-    report()
+
+
+# %%
+if _IS_MAIN:
+    _try("self-check", _self_check_marked)
+    _try("the payoff", report, needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4",
+                                     "exercise 5"))
+
+# %% [markdown]
+# ## Your progress
+#
+# One line per exercise, read from the verdicts the check cells above recorded. Change an
+# exercise, re-run its check cell, then re-run this one.
+
+# %%
+_MARKS = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+
+
+def _progress_board() -> list:
+    """Print one line per exercise and the tally; return the labels whose check failed."""
+    for label, what in _BOARD.items():
+        state = _STATUS.get(label, "not started")
+        print(f"  {_MARKS[state]} {label:<11s} {what:<34s} {state}")
+    done = sum(_STATUS.get(label) == "passed" for label in _BOARD)
+    print(f"\n  {done} of {len(_BOARD)} complete")
+    return [label for label, state in _STATUS.items() if state == "failed"]
+
+
+if _IS_MAIN:
+    _failed = _progress_board()
+    # A stub you have not reached yet is not a failure. A check that ran and came back wrong
+    # is: as a script or under CI it ends the run non-zero, so a green exit code never papers
+    # over it. In a notebook kernel it is a line on the board, not a traceback.
+    if _failed and "ipykernel" in sys.modules:
+        print(f"  still failing: {', '.join(_failed)} — each one's cell above says what to fix")
+    elif _failed:
+        raise SystemExit("checks failed: " + ", ".join(_failed))
 
 # %% [markdown]
 # ## Self-check answer key

@@ -33,12 +33,16 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
 import hashlib
+import io
 import math
+import re
 import struct
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -71,18 +75,28 @@ DATA_NOTE = ("SYNTHETIC. Every exposure and every probability of default in this
              "the notebook and in lesson.c. No real portfolio is used anywhere.")
 
 _BUILD = None
+_BUILT_FROM = None
 _CACHE = {}
 
 
 def build(verbose: bool = True):
-    """Compile the C source with make. Cached: the compiler runs once per session."""
-    global _BUILD
-    if _BUILD is None:
+    """Compile the C source with make. Cached, once per SAVED version of the source.
+
+    Save an edit to the C file and the next cell that runs the binary rebuilds it and forgets
+    every output the old binary produced — so a check you re-run judges the code you just
+    wrote, not the code you had when the notebook started.
+    """
+    global _BUILD, _BUILT_FROM
+    src = LESSON_DIR / C_SRC
+    stamp = src.stat().st_mtime_ns if src.exists() else None
+    if _BUILD is None or stamp != _BUILT_FROM:
         proc = subprocess.run(
             ["make", "-C", str(LESSON_DIR), f"PYTHON={sys.executable}",
              f"SRC={C_SRC}", f"BIN={BIN}"],
             capture_output=True, text=True, timeout=600)
         _BUILD = (proc.returncode == 0, (proc.stdout + proc.stderr).strip())
+        _BUILT_FROM = stamp
+        _CACHE.clear()
     ok, out = _BUILD
     if verbose:
         print("build OK" if ok else "BUILD FAILED\n" + out)
@@ -142,21 +156,146 @@ def make_test():
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 
 
-_FAILURES = []
+# The six exercises, and where each one lives. `_try` records the latest outcome of every
+# check in `_STATUS`; the progress board at the foot of the notebook reads it.
+_EXERCISES: dict[str, str] = {
+    "exercise 1": "naive_sum in lesson.c",
+    "exercise 2": "pairwise_sum in lesson.c",
+    "exercise 3": "kahan_sum in lesson.c",
+    "exercise 4": "ulps_between",
+    "exercise 5": "agreeing_significant_digits",
+    "exercise 6": "reproduce in lesson.c",
+}
+# Which exercise each stub belongs to, so an unfinished stub can be traced to its owner.
+_STUB_OWNER: dict[str, str] = {
+    "naive_sum": "exercise 1", "pairwise_sum": "exercise 2", "kahan_sum": "exercise 3",
+    "ulps_between": "exercise 4", "agreeing_significant_digits": "exercise 5",
+    "reproduce": "exercise 6",
+}
+_C_EXERCISES = ("exercise 1", "exercise 2", "exercise 3", "exercise 6")
+_STATUS: dict[str, str] = {}     # label -> "passed" | "failed" | "not started"
+_SELFTEST: dict[str, str] = {}   # C exercise -> the verdict its own line of `make test` gave
+_SELFTEST_LINE: dict[str, str] = {}  # C exercise -> that line, word for word
+_SELFTEST_OF = None              # the saved version of the C file those verdicts describe
+_FAILED_CHECKS: list[str] = []
 
 
-def _try(fn, *a, **k):
-    """Run a public check, print what it says, and remember whether it passed."""
+def _selftest(show: bool = True) -> None:
+    """Run `make test`, and take each C exercise's verdict from its own line of the report.
+
+    The binary tests each C function on hand-worked cases of its own, so one exercise's line
+    never waits on another's — unlike the portfolio checks, which need all three sums from a
+    single run of the binary.
+    """
+    global _SELFTEST_OF
+    build(verbose=False)
+    if not show and _SELFTEST and _SELFTEST_OF == _BUILT_FROM:
+        return                         # the binary has not changed since its last self-test
+    code, out = make_test()
+    if show:
+        print(out)
+        print(f"exit code {code}  (0 = all pass, 2 = something is still a stub, "
+              "1 = a failure)\n")
+    _SELFTEST.clear()
+    _SELFTEST_LINE.clear()
+    verdicts = {"PASS": "passed", "TODO": "not started", "FAIL": "failed"}
+    for line in out.splitlines():
+        m = re.match(r"\s*(PASS|TODO|FAIL)\s+exercise \d+\s+(\w+)", line)
+        if m and m.group(2) in _STUB_OWNER:
+            _SELFTEST[_STUB_OWNER[m.group(2)]] = verdicts[m.group(1)]
+            _SELFTEST_LINE[_STUB_OWNER[m.group(2)]] = " ".join(line.split())
+    _SELFTEST_OF = _BUILT_FROM
+
+
+def _stub_owner(exc: NotImplementedError):
+    """The exercise whose unfinished stub raised `exc`: a C stub names itself in the binary's
+    message, and a Python stub is the innermost frame of the traceback."""
+    m = re.search(r"(\w+)\(\) is still a stub", str(exc))
+    if m:
+        return _STUB_OWNER.get(m.group(1))
+    tb, name = exc.__traceback__, ""
+    while tb is not None:
+        name, tb = tb.tb_frame.f_code.co_name, tb.tb_next
+    return _STUB_OWNER.get(name)
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple = (), quiet: bool = False) -> None:
+    """Run a check, or a demo that depends on your code, without derailing the notebook.
+
+    A stub you have not filled in yet simply says so, and a demo that `needs` an exercise you
+    have not passed yet names that exercise and skips. A wrong answer prints the check's own
+    message — which names the likely mistake — and the notebook carries on. A C exercise is
+    judged twice: by its own line of `make test`, and by a portfolio check that cannot run
+    until all three sums exist; until it can, the `make test` line is the verdict. Every
+    outcome lands in `_STATUS` for the progress board; `quiet` silences all but a failure.
+    """
+    say = (lambda *_: None) if quiet else print
+    waiting = [ex for ex in needs if _STATUS.get(ex) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        if len(waiting) == 1:
+            named = f"{waiting[0]} (`{_EXERCISES[waiting[0]]}`)"
+        else:
+            nums = [ex.split()[-1] for ex in waiting]
+            named = "exercises " + ", ".join(nums[:-1]) + " and " + nums[-1]
+        say(f"{label}: skipped — needs {named} first. Re-run this cell once "
+            f"{'that check passes' if len(waiting) == 1 else 'those checks pass'}.")
+        return
+    if label in _C_EXERCISES:
+        _selftest(show=False)          # its own verdict, from the C file as it stands now
     try:
-        fn(*a, **k)
-    except NotImplementedError as e:
-        print(f"  TODO {fn.__name__}: {e}")
-        _FAILURES.append(fn.__name__)
-    except AssertionError as e:
-        print(f"  FAIL {fn.__name__}: {e}")
-        _FAILURES.append(fn.__name__)
+        with contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext():
+            check()
+    except NotImplementedError as exc:
+        owner = _stub_owner(exc)
+        if owner in (None, label) or _SELFTEST.get(label) == "not started":
+            _STATUS[label] = "not started"
+            say(f"{label}: not implemented yet — fill in `{_EXERCISES[label]}`, then re-run "
+                "this cell." if label in _EXERCISES else f"{label}: not started — {exc}")
+        elif label in _C_EXERCISES:
+            # The portfolio check cannot run yet, so your function's own line of `make test`
+            # is the verdict — and a FAIL there is a failure, here and in the exit code.
+            _STATUS[label] = _SELFTEST.get(label, "not started")
+            if _STATUS[label] == "failed":
+                _FAILED_CHECKS.append(label)
+                print(f"{label}: FAILED — `make test` says: {_SELFTEST_LINE.get(label, '')}")
+            else:
+                say(f"{label}: the portfolio check waits on {owner} (`{_EXERCISES[owner]}`), "
+                    "still a stub — the binary computes all three sums in one run. Until "
+                    "then, your function's own line of `make test` is its verdict.")
+        else:
+            _STATUS[label] = "not started"
+            say(f"{label}: skipped — needs {owner} (`{_EXERCISES[owner]}`) first.")
+    except AssertionError as exc:
+        _STATUS[label] = "failed"
+        _FAILED_CHECKS.append(label)
+        print(f"{label}: FAILED — {exc}")
+    except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
+        _FAILED_CHECKS.append(label)
+        print(f"{label}: raised {type(exc).__name__}: {exc}")
     else:
-        print(f"  ok   {fn.__name__}")
+        if _SELFTEST.get(label) == "failed":
+            _STATUS[label] = "failed"
+            _FAILED_CHECKS.append(label)
+            print(f"{label}: FAILED — the portfolio check passed, but `make test` still fails "
+                  f"your function on a hand-worked case: {_SELFTEST_LINE.get(label, '')}")
+        else:
+            _STATUS[label] = "passed"
+            say(f"{label}: passed")
+
+
+def _progress_board() -> None:
+    """One line per exercise, from the latest run of its check, then the tally."""
+    marks = {"passed": "✅ passed", "failed": "❌ failed", "not started": "⏳ not started"}
+    width = max(len(label) for label in _EXERCISES)
+    print("\nYOUR PROGRESS")
+    for label, where in _EXERCISES.items():
+        mark = marks[_STATUS.get(label, "not started")]
+        print(f"  {mark:<15} {label:<{width}}  {where}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    quiz = marks[_STATUS.get("self-check", "not started")]
+    print(f"  {done} of {len(_EXERCISES)} exercises complete · self-check quiz: {quiz}")
 
 
 if _IS_MAIN:
@@ -180,20 +319,26 @@ if _IS_MAIN:
 # in this lesson is a number somebody typed.
 
 # %%
-if _IS_MAIN:
-    _facts = metrics(cached("facts"))
-    print(f"  a double carries {_facts['mant_dig']:.0f} bits of significand")
-    print(f"  DBL_EPSILON     = {_facts['dbl_epsilon']!r}")
-    print(f"  unit roundoff u = {_facts['unit_roundoff']!r}  (= DBL_EPSILON / 2 = 2^-53)")
+def _show_machine_facts() -> None:
+    # Through `_try`, like every cell that runs the binary: if an edit to lesson.c stops it
+    # compiling, this says so and Run all carries on to your exercise cells and the board.
+    facts = metrics(cached("facts"))
+    print(f"  a double carries {facts['mant_dig']:.0f} bits of significand")
+    print(f"  DBL_EPSILON     = {facts['dbl_epsilon']!r}")
+    print(f"  unit roundoff u = {facts['unit_roundoff']!r}  (= DBL_EPSILON / 2 = 2^-53)")
     print(f"  python agrees:    {sys.float_info.epsilon!r}, "
           f"{sys.float_info.mant_dig} bits")
-    print(f"  pairwise block  = {_facts['pairwise_block']:.0f}")
-    _wider = _facts["ldbl_mant_dig"] > _facts["mant_dig"]
-    print(f"  long double     = {_facts['sizeof_long_double']:.0f} bytes, "
-          f"{_facts['ldbl_mant_dig']:.0f} bits of significand — "
-          + ("wider than a double here" if _wider
+    print(f"  pairwise block  = {facts['pairwise_block']:.0f}")
+    wider = facts["ldbl_mant_dig"] > facts["mant_dig"]
+    print(f"  long double     = {facts['sizeof_long_double']:.0f} bytes, "
+          f"{facts['ldbl_mant_dig']:.0f} bits of significand — "
+          + ("wider than a double here" if wider
              else "THE SAME as a double here, so accumulating in one buys nothing"))
     print(f"\n  {DATA_NOTE}")
+
+
+if _IS_MAIN:
+    _try("machine facts", _show_machine_facts)
 
 # %% [markdown]
 # ## 2. The portfolio, built out of exact bits
@@ -251,7 +396,7 @@ def _check_bit_identity() -> None:
 
 
 if _IS_MAIN:
-    _try(_check_bit_identity)
+    _try("bit identity", _check_bit_identity)
 
 # %% [markdown]
 # ## 3. Exercise 1 — `naive_sum()` in `lesson.c`
@@ -289,10 +434,8 @@ def _check_naive_sum() -> None:
 
 
 if _IS_MAIN:
-    _code, _out = make_test()
-    print(_out)
-    print(f"exit code {_code}  (0 = all pass, 2 = something is still a stub, 1 = a failure)\n")
-    _try(_check_naive_sum)
+    _selftest()
+    _try("exercise 1", _check_naive_sum)
 
 # %% [markdown]
 # ## 4. Exercise 2 — `pairwise_sum()` in `lesson.c`
@@ -327,7 +470,7 @@ def _check_pairwise_sum() -> None:
 
 
 if _IS_MAIN:
-    _try(_check_pairwise_sum)
+    _try("exercise 2", _check_pairwise_sum)
 
 # %% [markdown]
 # ## 5. Exercise 3 — `kahan_sum()` in `lesson.c`
@@ -379,7 +522,7 @@ def _check_kahan_sum() -> None:
 
 
 if _IS_MAIN:
-    _try(_check_kahan_sum)
+    _try("exercise 3", _check_kahan_sum)
 
 # %% [markdown]
 # ## 6. The same numbers, four orders
@@ -418,7 +561,8 @@ def _check_order_dependence() -> None:
 
 
 if _IS_MAIN:
-    _try(_check_order_dependence)
+    _try("order dependence", _check_order_dependence,
+         needs=("exercise 1", "exercise 3"))
 
 # %% [markdown]
 # ## 7. Exercise 4 — `ulps_between(a, b)`, in Python
@@ -483,6 +627,9 @@ def _check_ulps_between() -> None:
         pass
     else:
         raise AssertionError("a NaN argument must raise ValueError, not return a number")
+
+
+def _show_ulps_on_the_portfolio() -> None:
     ex, _pd = generate_portfolio(N)
     exact = math.fsum(ex.tolist())
     m = metrics(cached("sums", "--n", str(N)))
@@ -491,7 +638,9 @@ def _check_ulps_between() -> None:
 
 
 if _IS_MAIN:
-    _try(_check_ulps_between)
+    _try("exercise 4", _check_ulps_between)
+    _try("ULPs on the portfolio", _show_ulps_on_the_portfolio,
+         needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4"))
 
 # %% [markdown]
 # ## 8. Exercise 5 — `agreeing_significant_digits(a, b)`, in Python
@@ -570,6 +719,10 @@ def _check_agreeing_significant_digits() -> None:
         pass
     else:
         raise AssertionError("a NaN argument must raise ValueError")
+
+
+def _show_digits_on_the_portfolio() -> None:
+    f = agreeing_significant_digits
     m = metrics(cached("sums", "--n", str(N)))
     block = rows(cached("order", "--n", str(N)), "order")
     fwd, rev = block[0][1], block[1][1]
@@ -583,7 +736,9 @@ def _check_agreeing_significant_digits() -> None:
 
 
 if _IS_MAIN:
-    _try(_check_agreeing_significant_digits)
+    _try("exercise 5", _check_agreeing_significant_digits)
+    _try("digits on the portfolio", _show_digits_on_the_portfolio,
+         needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5"))
 
 # %% [markdown]
 # ## 9. Exercise 6 — `reproduce()` in `lesson.c`
@@ -631,6 +786,8 @@ def _check_reproduce() -> None:
         f"{near['bound']!r}. sum_abs is a magnitude; a negative bound makes gap <= bound "
         "false for every gap, so every reconciliation would come back a finding.")
 
+
+def _show_the_two_teams_adjudicated() -> None:
     ex, _pd = generate_portfolio(N)
     m = metrics(cached("sums", "--n", str(N)))
     block = rows(cached("order", "--n", str(N)), "order")
@@ -646,7 +803,9 @@ def _check_reproduce() -> None:
 
 
 if _IS_MAIN:
-    _try(_check_reproduce)
+    _try("exercise 6", _check_reproduce)
+    _try("the two teams adjudicated", _show_the_two_teams_adjudicated,
+         needs=("exercise 1", "exercise 2", "exercise 3", "exercise 6"))
 
 # %% [markdown]
 # ## 10. Why `EXPLAINED` is not a resolution
@@ -687,7 +846,8 @@ def _check_a_real_error_hides_inside_the_bound() -> None:
 
 
 if _IS_MAIN:
-    _try(_check_a_real_error_hides_inside_the_bound)
+    _try("a real error inside the bound",
+         _check_a_real_error_hides_inside_the_bound, needs=tuple(_EXERCISES))
 
 # %% [markdown]
 # ## 11. The metric, not just the total
@@ -720,7 +880,8 @@ def _check_weighted_mean() -> None:
 
 
 if _IS_MAIN:
-    _try(_check_weighted_mean)
+    _try("weighted mean", _check_weighted_mean,
+         needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5"))
 
 # %% [markdown]
 # ## 12. Common mistakes
@@ -775,7 +936,8 @@ def _demonstrate_common_mistakes() -> None:
 
 
 if _IS_MAIN:
-    _try(_demonstrate_common_mistakes)
+    _try("common mistakes", _demonstrate_common_mistakes,
+         needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5"))
 
 # %% [markdown]
 # ## 13. Self-check
@@ -831,8 +993,16 @@ def _check_self_check(answers: dict = None) -> None:
     print("self-check: all four right")
 
 
+def _self_check_marked() -> None:
+    """Mark the quiz, or report it as not started while every answer is still '?'."""
+    if all(str(v).strip() == "?" for v in SELF_CHECK.values()):
+        raise NotImplementedError("put a, b, c or d against each question in SELF_CHECK, then "
+                                  "re-run this cell")
+    _check_self_check()
+
+
 if _IS_MAIN:
-    _try(_check_self_check)
+    _try("self-check", _self_check_marked)
 
 # %% [markdown]
 # ## 14. What you built
@@ -847,10 +1017,30 @@ if _IS_MAIN:
 
 # %%
 if _IS_MAIN:
-    if _FAILURES:
-        print(f"\n{len(_FAILURES)} check(s) still failing: {', '.join(_FAILURES)}")
-        sys.exit(1)
-    print("\nall public checks green — now run:  python tools/grade.py <this lesson>")
+    # Re-run every exercise's check against the C file and your functions as they stand NOW, so
+    # the board reports your latest edit rather than whatever each cell said the last time you
+    # ran it. Quietly: a pass or an untouched stub says nothing here; a failure still says why.
+    for _label, _check in (("exercise 1", _check_naive_sum),
+                           ("exercise 2", _check_pairwise_sum),
+                           ("exercise 3", _check_kahan_sum),
+                           ("exercise 4", _check_ulps_between),
+                           ("exercise 5", _check_agreeing_significant_digits),
+                           ("exercise 6", _check_reproduce),
+                           ("self-check", _self_check_marked)):
+        _try(_label, _check, quiet=True)
+    _progress_board()
+    if all(_STATUS.get(label) == "passed" for label in (*_EXERCISES, "self-check")):
+        print("\nall public checks green — now run:  python tools/grade.py <this lesson>")
+    # A stub you have not reached yet is not a failure. A check that ran and came back wrong
+    # is: in a script or under CI it ends this run non-zero, rather than letting a green exit
+    # code paper over it. Inside a notebook kernel it is a printed line, never a traceback.
+    _still_failing = [label for label, state in _STATUS.items() if state == "failed"]
+    if "ipykernel" in sys.modules:
+        if _still_failing:
+            print("\nstill failing: " + ", ".join(_still_failing)
+                  + " — each one's message above names the likely mistake.")
+    elif _FAILED_CHECKS:
+        raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))
 
 # %% [markdown]
 # ## Self-check answer key

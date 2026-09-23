@@ -6,12 +6,76 @@
 
 # %%
 import hashlib
+import sys
 from pathlib import Path
+from typing import Any, Callable
 
 import mujoco
 import numpy as np
 
 print("mujoco", mujoco.__version__, "· numpy", np.__version__)
+
+# What the progress board in the last cell reads: label -> "passed", "failed", "not started"
+# or "waiting on <exercise>". Every check and every demo that runs on your code writes here.
+_STATUS: dict[str, str] = {}
+
+
+def _try(label: str, check: Callable[[], Any], needs: tuple = ()) -> Any:
+    """Run a check, or a demo that depends on your code, without derailing the notebook.
+
+    A stub you have not filled in yet simply says so. A wrong answer prints the check's own
+    message — which names the likely mistake — and the notebook carries on, so one broken
+    exercise never hides the feedback on the others. Nothing is swallowed: every outcome is
+    recorded in _STATUS, and the last cell of this file exits non-zero if any check failed.
+
+    `needs` names the exercises a cell runs on. Until each has passed its own check, the cell
+    says which one it is waiting for and skips, rather than failing on code you have not
+    reached yet. Returns whatever the check returns, or None if it did not pass.
+    """
+    waiting = [n for n in needs if _STATUS.get(n) != "passed"]
+    if waiting:
+        _STATUS[label] = "waiting on " + ", ".join(waiting)
+        named = [f"{n} ({_STATUS.get(n, 'not run yet')})" for n in waiting]
+        one = len(named) == 1
+        print(f"{label}: skipped — it runs on "
+              + (named[0] if one else ", ".join(named[:-1]) + " and " + named[-1])
+              + f", which {'has' if one else 'have'} not passed yet. Come back once "
+              + f"{'it has' if one else 'they have'}.")
+        return None
+    try:
+        result = check()
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        print(f"{label}: {str(exc) or 'not implemented yet — fill in the stub above'}, "
+              "then re-run this cell.")
+        return None
+    except AssertionError as exc:
+        _STATUS[label] = "failed"
+        print(f"{label}: FAILED — {exc}")
+        return None
+    except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
+        print(f"{label}: raised {type(exc).__name__}: {exc}")
+        return None
+    _STATUS[label] = "passed"
+    return result
+
+
+def _progress_board(exercises) -> None:
+    """Print one line per (label, what): ✅ passed, ❌ failed or ⏳ not started; then a tally."""
+    print("\nProgress board")
+    for label, what in exercises:
+        state = _STATUS.get(label, "not started")
+        if state == "passed":
+            mark, note = "✅", ""
+        elif state == "failed":
+            mark, note = "❌", " — failed: see its message above"
+        else:
+            mark, note = "⏳", f" — {state}"
+        print(f"  {mark} {label}: {what}{note}")
+    done = sum(_STATUS.get(label) == "passed" for label, _ in exercises)
+    print(f"  {done} of {len(exercises)} complete")
+
 
 MODEL_FILENAME = "stander.xml"
 
@@ -108,6 +172,11 @@ def _check_com_ground_projection() -> None:
 
 
 # %%
+if __name__ == "__main__":
+    _try("exercise 1", _check_com_ground_projection)
+
+
+# %%
 def support_polygon(model, data) -> np.ndarray:
     """The four ground corners of the foot, in world (x, y), counter-clockwise."""
     sx, sy, sz = model.geom_size[FOOT_GEOM_ID]
@@ -159,6 +228,11 @@ def _check_support_margin() -> None:
           "than it is long")
     print(f"  heel margin {heel:.4f} m, toe margin {toe:.4f} m, "
           f"ratio {toe / heel:.3f} — it has more room forwards than backwards")
+
+
+# %%
+if __name__ == "__main__":
+    _try("exercise 2", _check_support_margin, needs=("exercise 1",))
 
 
 # %%
@@ -247,6 +321,11 @@ def _check_torque_ceiling() -> None:
 
 
 # %%
+if __name__ == "__main__":
+    _try("the flat-foot ceiling", _check_torque_ceiling)
+
+
+# %%
 def has_fallen(model, data) -> bool:
     """True when the torso has tilted more than `FALL_TILT` radians away from vertical."""
     return bool(abs(torso_tilt(model, data)) > FALL_TILT)
@@ -263,6 +342,11 @@ def _check_has_fallen() -> None:
     mujoco.mj_forward(model, data)
     assert has_fallen(model, data), "tilted backwards past the threshold is just as fallen"
     print("exercise 3 looks right: attitude decides, in both directions")
+
+
+# %%
+if __name__ == "__main__":
+    _try("exercise 3", _check_has_fallen)
 
 
 # %%
@@ -339,6 +423,11 @@ def _check_rollout() -> None:
 
 
 # %%
+if __name__ == "__main__":
+    _try("exercise 4", _check_rollout, needs=("exercise 1", "exercise 3"))
+
+
+# %%
 def com_velocity(model, data) -> np.ndarray:
     """(vx, vy) of the whole machine's centre of mass."""
     mujoco.mj_subtreeVel(model, data)
@@ -384,6 +473,11 @@ def _check_com_balance_torque() -> None:
 
 
 # %%
+if __name__ == "__main__":
+    _try("exercise 5", _check_com_balance_torque, needs=("exercise 4",))
+
+
+# %%
 def survival_pattern(model, data, controller, ladder=PUSH_LADDER) -> list:
     """Run one rollout per rung and return a list of booleans."""
     return [bool(rollout(model, data, controller, force)["survived"]) for force in ladder]
@@ -406,6 +500,11 @@ def _check_largest_survivable_push() -> None:
     assert largest_survivable_push([False, False], [20.0, 40.0]) == 0.0
     assert largest_survivable_push([True, True], [20.0, 40.0]) == 40.0
     print("exercise 6 looks right: it reports the prefix, not the maximum")
+
+
+# %%
+if __name__ == "__main__":
+    _try("exercise 6", _check_largest_survivable_push)
 
 
 # %%
@@ -445,6 +544,12 @@ def _check_comparison() -> None:
               "any.")
     print("\n  That is the lesson: control quality only cashes in where the geometry has "
           "left\n  something to work with.")
+
+
+# %%
+if __name__ == "__main__":
+    _try("three controllers", _check_comparison,
+         needs=("exercise 4", "exercise 5", "exercise 6"))
 
 
 # %%
@@ -507,6 +612,12 @@ def _check_doomed_but_inside() -> None:
 
 
 # %%
+if __name__ == "__main__":
+    _try("inside and already lost", _check_doomed_but_inside,
+         needs=("exercise 4", "exercise 5"))
+
+
+# %%
 def _check_non_monotonic() -> None:
     model, data = load_stander()
     stiff = posture_controller(POSTURE_STIFF)
@@ -520,6 +631,11 @@ def _check_non_monotonic() -> None:
     )
     print("  A bigger shove survived where a smaller one did not. That is why the prefix, and")
     print("  not the maximum, is the honest summary of a ladder.")
+
+
+# %%
+if __name__ == "__main__":
+    _try("survival is not monotone", _check_non_monotonic, needs=("exercise 4",))
 
 
 # %%
@@ -551,19 +667,18 @@ def _check_self_check(answers: dict = None) -> None:
     print("self-check: all five right")
 
 
-# %%
-if __name__ == "__main__":
-    _check_com_ground_projection()
-    _check_support_margin()
-    _check_torque_ceiling()
-    _check_has_fallen()
-    _check_rollout()
-    _check_com_balance_torque()
-    _check_largest_survivable_push()
-    _check_comparison()
-    _check_doomed_but_inside()
-    _check_non_monotonic()
+def _self_check_if_answered() -> None:
+    """Mark SELF_CHECK, but count it as not started while every answer is still a "?"."""
+    if all(str(a).strip() == "?" for a in SELF_CHECK.values()):
+        raise NotImplementedError("not answered yet — put your five letters in SELF_CHECK "
+                                  "in section 13")
     _check_self_check()
+
+
+if __name__ == "__main__":
+    _try("self-check", _self_check_if_answered)
+
+
 
 # %% [markdown]
 # ## Self-check answers
@@ -606,3 +721,35 @@ if __name__ == "__main__":
 # (a) is refuted by the repeatability check; (c) assumes the anomaly rather than the
 # assumption is wrong; (d) is the actual trap — bisection silently assumes monotonicity and
 # will report a limit above pushes that are known to fail.
+
+# %%
+# Your progress. This re-runs each exercise's check, and the self-check, against your code as
+# it stands now, so the board is current even if you changed something after running its cell.
+if __name__ == "__main__":
+    print("Re-checking every exercise against your code as it stands now:")
+    for _label, _check, _needs in (
+            ("exercise 1", _check_com_ground_projection, ()),
+            ("exercise 2", _check_support_margin, ("exercise 1",)),
+            ("exercise 3", _check_has_fallen, ()),
+            ("exercise 4", _check_rollout, ("exercise 1", "exercise 3")),
+            ("exercise 5", _check_com_balance_torque, ("exercise 4",)),
+            ("exercise 6", _check_largest_survivable_push, ()),
+            ("self-check", _self_check_if_answered, ())):
+        _try(_label, _check, needs=_needs)
+    _progress_board((("exercise 1", "com_ground_projection, where the mass is"),
+                     ("exercise 2", "support_margin, how much room is left"),
+                     ("exercise 3", "has_fallen, what counts as fallen"),
+                     ("exercise 4", "rollout, the push and what it measures"),
+                     ("exercise 5", "com_balance_torque, feedback on the mass"),
+                     ("exercise 6", "largest_survivable_push, the prefix of the ladder"),
+                     ("self-check", "the five questions in section 13")))
+    # A stub you have not reached yet is not a failure. A check that ran and came back wrong
+    # is: in a script or under CI it ends the run non-zero, so a green exit code cannot paper
+    # over it. Inside a notebook kernel it is a printed line, never a traceback.
+    _failed = [label for label, state in _STATUS.items() if state == "failed"]
+    if _failed:
+        _message = "checks failed: " + ", ".join(_failed)
+        if "ipykernel" in sys.modules:
+            print(_message)
+        else:
+            raise SystemExit(_message)

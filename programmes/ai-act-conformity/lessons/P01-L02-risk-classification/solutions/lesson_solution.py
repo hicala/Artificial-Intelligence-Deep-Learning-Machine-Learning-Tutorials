@@ -36,7 +36,9 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
 import hashlib
+import io
 import json
 import sys
 from collections import Counter
@@ -65,26 +67,77 @@ def parse_date(value: Any) -> date | None:
     return date.fromisoformat(value)
 
 
-_FAILED_CHECKS: list[str] = []
+# Every check and every demo below reports how it went here, and the progress board at the
+# foot of the notebook reads it: label -> "passed", "failed" or "not started". Each run of a
+# cell overwrites its own entry, so the board shows where your code stands now.
+_STATUS: dict[str, str] = {}
 
 
-def _try(label: str, check: Callable[[], None]) -> None:
+def _and(items: list) -> str:
+    """'a', 'a and b', 'a, b and c' — for naming exercises in a sentence."""
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple = (),
+         builds_on: tuple = ()) -> None:
     """Run a check, or a demo that depends on your code, without derailing the notebook.
 
     A stub you have not filled in yet simply says so. A wrong answer prints the check's own
     message — which names the likely mistake — and the notebook carries on, so one broken
-    exercise never hides the feedback on the other five.
+    exercise never hides the feedback on the other five. Every outcome is recorded for the
+    progress board, and outside a notebook the `__main__` block at the foot of this file exits
+    non-zero if any check is still failing.
+
+    `needs` names the exercises a demo consumes. Until each has passed its check, the demo says
+    which it is waiting for and skips, rather than running on a stub or on a wrong answer.
+    `builds_on` names the earlier exercises a check also calls. The check always runs, but
+    when one of those has not passed yet it says so, so you fix the right function first.
     """
+    waiting = [need for need in needs if _STATUS.get(need) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        print(f"{label}: skipped — needs {_and(waiting)} to pass "
+              f"{'its check' if len(waiting) == 1 else 'their checks'} first, then re-run "
+              "this cell.")
+        return
+    behind = [need for need in builds_on if _STATUS.get(need) != "passed"]
+    note = (f" (It also runs your {_and(behind)}, which "
+            f"{'has' if len(behind) == 1 else 'have'} not passed yet: start there.)"
+            if behind else "")
     try:
         check()
     except NotImplementedError:
-        print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+        _STATUS[label] = "not started"
+        print(f"{label}: not implemented yet — fill in the stub above, then re-run this "
+              f"cell.{note}")
     except AssertionError as exc:
-        _FAILED_CHECKS.append(label)
-        print(f"{label}: FAILED — {exc}")
+        _STATUS[label] = "failed"
+        print(f"{label}: FAILED — {exc}{note}")
     except Exception as exc:  # a half-finished implementation raising something else
-        _FAILED_CHECKS.append(label)
-        print(f"{label}: raised {type(exc).__name__}: {exc}")
+        _STATUS[label] = "failed"
+        print(f"{label}: raised {type(exc).__name__}: {exc}{note}")
+    else:
+        _STATUS[label] = "passed"
+
+
+def _progress_board(exercises: tuple) -> list:
+    """Re-check every exercise against your code as it stands now, and print the board.
+
+    The checks run quietly here — each already printed its message in its own cell — so the
+    board also picks up anything you fixed after running those cells. Returns the labels of
+    every check or demo that is still failing.
+    """
+    for label, _title, check in exercises:
+        with contextlib.redirect_stdout(io.StringIO()):
+            _try(label, check)
+    marks = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+    print("progress board")
+    for label, title, _check in exercises:
+        state = _STATUS[label]
+        print(f"  {marks[state]} {state:11s}  {label} · {title}")
+    done = sum(_STATUS[label] == "passed" for label, _title, _check in exercises)
+    print(f"\n{done} of {len(exercises)} exercises complete")
+    return [label for label, state in _STATUS.items() if state == "failed"]
 
 
 # %% [markdown]
@@ -385,6 +438,9 @@ def _check_derogation() -> None:
     print("exercise 1 looks right")
 
 
+# %%
+_try("exercise 1", _check_derogation)
+
 # %% [markdown]
 # ## 5. Exercise 2 — `ask_tier(system)`: the interview
 #
@@ -537,6 +593,9 @@ def _check_ask_tier() -> None:
         "q6's answer is the boolean OR of the two transparency flags.")
     print("exercise 2 looks right")
 
+
+# %%
+_try("exercise 2", _check_ask_tier, builds_on=("exercise 1",))
 
 # %% [markdown]
 # ## 6. Exercise 3 — `obligations_for(tier, system, as_of)`
@@ -713,6 +772,9 @@ def _check_obligations() -> None:
     print("exercise 3 looks right")
 
 
+# %%
+_try("exercise 3", _check_obligations)
+
 # %% [markdown]
 # ## 7. Exercise 4 — `classification_record(system, as_of)`
 #
@@ -809,6 +871,9 @@ def _check_record() -> None:
         rec["record_hash"], "as_of is part of the record, so it is part of the digest."
     print("exercise 4 looks right")
 
+
+# %%
+_try("exercise 4", _check_record, builds_on=("exercise 1", "exercise 2", "exercise 3"))
 
 # %% [markdown]
 # ## 8. Exercise 5 — `diff_records(before, after)`
@@ -932,6 +997,9 @@ def _check_diff() -> None:
             "report about nothing.")
     print("exercise 5 looks right")
 
+
+# %%
+_try("exercise 5", _check_diff, builds_on=("exercise 4",))
 
 # %% [markdown]
 # ## 9. Exercise 6 — `disagreement_report(panel)`
@@ -1066,6 +1134,9 @@ def _check_disagreement() -> None:
     print("exercise 6 looks right")
 
 
+# %%
+_try("exercise 6", _check_disagreement, builds_on=("exercise 2",))
+
 # %% [markdown]
 # ## 10. The artefact
 #
@@ -1084,7 +1155,8 @@ def classification_table(as_of: date = AS_OF) -> None:
               f"{len(duties['binding_now']):<4d} {duties['next_deadline'] or '-'}")
 
 
-_try("the table", classification_table)
+_try("the table", classification_table,
+     needs=("exercise 1", "exercise 2", "exercise 3"))
 
 # %%
 def _show_record() -> None:
@@ -1095,7 +1167,8 @@ def _show_record() -> None:
           f"{len(record['question_trail'])} questions")
 
 
-_try("the record", _show_record)
+_try("the record", _show_record,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4"))
 
 # %%
 def _show_panel() -> None:
@@ -1112,7 +1185,7 @@ def _show_panel() -> None:
     print("\nEverything after the pivot is downstream of an unresolved disagreement.")
 
 
-_try("the panel", _show_panel)
+_try("the panel", _show_panel, needs=("exercise 1", "exercise 2", "exercise 6"))
 
 # %%
 def _show_diff() -> None:
@@ -1126,7 +1199,8 @@ def _show_diff() -> None:
     print(f"  requires reassessment: {diff['requires_reassessment']}")
 
 
-_try("the diff", _show_diff)
+_try("the diff", _show_diff,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5"))
 
 # %% [markdown]
 # ## 11. Common mistakes
@@ -1193,7 +1267,9 @@ def _self_check_aids() -> None:
           f"requires_reassessment={diff['requires_reassessment']}")
 
 
-_try("self-check aids", _self_check_aids)
+_try("self-check aids", _self_check_aids,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5",
+            "exercise 6"))
 
 # %% [markdown]
 # 4. Four analysts describe one system and reach three different tiers. The most useful thing
@@ -1276,20 +1352,6 @@ def check_self_check(answers: dict) -> None:
 #
 # **Again, and finally: this is engineering, not legal advice.**
 
-# %%
-if __name__ == "__main__":
-    for _name, _check in (("exercise 1", _check_derogation),
-                          ("exercise 2", _check_ask_tier),
-                          ("exercise 3", _check_obligations),
-                          ("exercise 4", _check_record),
-                          ("exercise 5", _check_diff),
-                          ("exercise 6", _check_disagreement)):
-        _try(_name, _check)
-    # A stub nobody has reached yet is not a failure. A check that ran and came back wrong is,
-    # and it ends this run non-zero rather than letting a green exit code paper over it.
-    if _FAILED_CHECKS:
-        raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))
-
 # %% [markdown]
 # ## Self-check answers (solution bundle only — this section is not in the student file)
 #
@@ -1339,3 +1401,30 @@ SELF_CHECK_ANSWERS = {1: "b", 2: "b", 3: "c", 4: "c", 5: "b"}
 if __name__ == "__main__":
     print("\nself-check:")
     check_self_check(SELF_CHECK_ANSWERS)
+
+# %% [markdown]
+# ## Your progress
+#
+# The cell below re-runs every exercise's check against your code as it stands now, and
+# prints one line per exercise: ✅ passed, ❌ failed or ⏳ not started. Run it whenever you like.
+
+# %%
+if __name__ == "__main__":
+    _failing = _progress_board((
+        ("exercise 1", "derogation_assessment()", _check_derogation),
+        ("exercise 2", "ask_tier()", _check_ask_tier),
+        ("exercise 3", "obligations_for()", _check_obligations),
+        ("exercise 4", "classification_record()", _check_record),
+        ("exercise 5", "diff_records()", _check_diff),
+        ("exercise 6", "disagreement_report()", _check_disagreement),
+    ))
+    # A stub nobody has reached yet is not a failure. A check that ran and came back wrong is:
+    # in a script or under CI it ends the run non-zero, rather than letting a green exit code
+    # paper over it. Inside a notebook kernel that would be a traceback at the foot of the
+    # page, so there it is one printed line instead.
+    if _failing:
+        if "ipykernel" in sys.modules:
+            print("\nstill failing: " + ", ".join(_failing)
+                  + ". Each one's own cell above says what went wrong.")
+        else:
+            raise SystemExit("checks failed: " + ", ".join(_failing))

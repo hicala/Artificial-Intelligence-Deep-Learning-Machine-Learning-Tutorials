@@ -32,6 +32,8 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
+import io
 import math
 import sys
 import time
@@ -64,24 +66,71 @@ DATA_NOTE = (
 
 _FAILED_CHECKS: list[str] = []
 
+# The exercises, in order, and the function each one asks you to write. `_try` records the
+# latest outcome of every check in `_STATUS`; the progress board at the foot reads it.
+_EXERCISES: dict[str, str] = {
+    "exercise 1": "observe_feature_use",
+    "exercise 2": "reconcile_variables",
+    "exercise 3": "probe_monotonicity",
+    "exercise 4": "probe_domain",
+    "exercise 5": "scan_leakage",
+    "exercise 6": "duplicate_contamination",
+    "exercise 7": "baseline_margin_check",
+    "exercise 8": "soundness_findings",
+}
+_STATUS: dict[str, str] = {}     # label -> "passed" | "failed" | "not started"
 
-def _try(label: str, check: Callable[[], None]) -> None:
+
+def _try(label: str, check: Callable[[], None], needs: tuple = (), quiet: bool = False) -> None:
     """Run a check, or a demo that depends on your code, without derailing the notebook.
 
-    A stub you have not filled in yet simply says so. A wrong answer prints the check's own
+    A stub you have not filled in yet simply says so, and a demo that `needs` an exercise you
+    have not passed yet names that exercise and skips. A wrong answer prints the check's own
     message — which names the likely mistake — and the notebook carries on, so one broken
-    exercise never hides the feedback on the other seven.
+    exercise never hides the feedback on the other seven. Every outcome lands in `_STATUS`
+    for the progress board; `quiet` silences a pass or a stub, never a failure.
     """
+    waiting = [ex for ex in needs if _STATUS.get(ex) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        if len(waiting) == 1:
+            named = f"{waiting[0]} (`{_EXERCISES[waiting[0]]}`)"
+        else:
+            nums = [ex.split()[-1] for ex in waiting]
+            named = "exercises " + ", ".join(nums[:-1]) + " and " + nums[-1]
+        print(f"{label}: skipped — needs {named} first. Re-run this cell once "
+              f"{'that check passes' if len(waiting) == 1 else 'those checks pass'}.")
+        return
     try:
-        check()
+        with contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext():
+            check()
     except NotImplementedError:
-        print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+        _STATUS[label] = "not started"
+        if not quiet:
+            print(f"{label}: not implemented yet — fill in the stub above, then re-run "
+                  "this cell.")
     except AssertionError as exc:
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: FAILED — {exc}")
     except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
+
+
+def _progress_board() -> None:
+    """One line per exercise, from the latest run of its check, then the tally."""
+    marks = {"passed": "✅ passed", "failed": "❌ failed", "not started": "⏳ not started"}
+    width = max(len(label) for label in _EXERCISES)
+    print("\nYOUR PROGRESS")
+    for label, function in _EXERCISES.items():
+        mark = marks[_STATUS.get(label, "not started")]
+        print(f"  {mark:<15} {label:<{width}}  {function}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    print(f"  {done} of {len(_EXERCISES)} exercises complete")
 
 
 # --- the documented specification ----------------------------------------------------------
@@ -1392,7 +1441,7 @@ def _run_review() -> None:
         print(f"  [{f.severity:8s}] {f.rule:<18s} {subject:<24s} {f.detail}")
 
 
-_try("the review", _run_review)
+_try("the review", _run_review, needs=tuple(_EXERCISES))
 
 # %% [markdown]
 # ## 11. Common mistakes
@@ -1431,7 +1480,7 @@ def _show_single_row_probe() -> None:
     print("would have certified a variable list the implementation does not use.")
 
 
-_try("one-row probe", _show_single_row_probe)
+_try("one-row probe", _show_single_row_probe, needs=("exercise 1",))
 
 # %% [markdown]
 # ## 12. Self-check
@@ -1500,7 +1549,7 @@ def _show_review_reproduces() -> None:
     print("a record of what one reviewer thought on one afternoon.")
 
 
-_try("the review reproduces", _show_review_reproduces)
+_try("the review reproduces", _show_review_reproduces, needs=tuple(_EXERCISES))
 
 # %% [markdown]
 # ## What you built, and where it goes next
@@ -1558,7 +1607,10 @@ print(f"\nlesson wall time: {time.perf_counter() - _LESSON_T0:.1f}s")
 
 # %%
 if __name__ == "__main__":
-    for _name, _check in (("exercise 1", _check_observe),
+    # Re-run every check against your code as it stands NOW, so the board reports your latest
+    # edit rather than whatever each check cell said the last time you ran it. Quietly: a pass
+    # or an untouched stub says nothing here, and a check that fails still says why.
+    for _label, _check in (("exercise 1", _check_observe),
                           ("exercise 2", _check_reconcile),
                           ("exercise 3", _check_monotonicity),
                           ("exercise 4", _check_domain),
@@ -1566,8 +1618,15 @@ if __name__ == "__main__":
                           ("exercise 6", _check_contamination),
                           ("exercise 7", _check_baseline),
                           ("exercise 8", _check_findings)):
-        _try(_name, _check)
+        _try(_label, _check, quiet=True)
+    _progress_board()
     # A stub you have not reached yet is not a failure. A check that ran and came back wrong
-    # is, and it ends this run non-zero rather than letting a green exit code paper over it.
-    if _FAILED_CHECKS:
+    # is: in a script or under CI it ends this run non-zero, rather than letting a green exit
+    # code paper over it. Inside a notebook kernel it is a printed line, never a traceback.
+    _still_failing = [label for label, state in _STATUS.items() if state == "failed"]
+    if "ipykernel" in sys.modules:
+        if _still_failing:
+            print("\nstill failing: " + ", ".join(_still_failing)
+                  + " — each one's message above names the likely mistake.")
+    elif _FAILED_CHECKS:
         raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))

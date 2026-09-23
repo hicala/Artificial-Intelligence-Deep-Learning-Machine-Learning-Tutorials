@@ -8,8 +8,11 @@
 
 # %%
 # Setup. Everything the lesson needs, in one cell, with versions printed by the code itself.
+import contextlib
+import io
 import sys
 import time
+from typing import Callable
 
 import numpy as np
 
@@ -23,6 +26,80 @@ try:  # noqa: SIM105 - the failure is the point, so it is reported rather than s
 except ImportError:
     _TORCH = "not installed — which is exactly why you are about to differentiate by hand"
 print("torch ", _TORCH)
+
+# Every check and every demo below runs through `_try`, so pressing Run all before you have
+# written a line reaches the progress board at the foot of the notebook instead of stopping at
+# the first stub.
+# The six exercises, in the order the notebook meets them: (label, function, where).
+_EXERCISES = [("exercise 1", "softmax", "section 3"), ("exercise 2", "cross_entropy", "section 4"),
+              ("exercise 3", "attention_forward", "section 6"),
+              ("exercise 4", "cross_entropy_backward", "section 8"),
+              ("exercise 5", "attention_backward", "section 9"),
+              ("exercise 6", "make_batch", "section 12")]
+_FUNCTION = {label: function for label, function, _ in _EXERCISES}
+_FOR_GRADIENTS = ("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5")
+_STATUS: dict = {}       # label -> "passed" | "failed" | "not started", for the progress board
+_WAITING_ON: dict = {}   # label -> the stub whose NotImplementedError stopped it
+
+
+def _unfinished(exc: BaseException) -> str:
+    """The function that raised NotImplementedError: the innermost frame of the traceback.
+
+    Exercise 3 calls your exercise 1, so an unfilled `softmax` stops exercise 3's check too —
+    and naming the stub that actually raised says which one to go back to.
+    """
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    return tb.tb_frame.f_code.co_name if tb is not None else ""
+
+
+def _named(labels: list) -> str:
+    """["exercise 3"] -> "exercise 3 (`attention_forward`)"; several -> "exercises 1, 3 and 5"."""
+    if len(labels) == 1:
+        return f"{labels[0]} (`{_FUNCTION[labels[0]]}`)"
+    nums = [label.split()[-1] for label in labels]
+    return "exercises " + ", ".join(nums[:-1]) + " and " + nums[-1]
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple = ()) -> None:
+    """Run a check, or a demo that depends on your code, without derailing the notebook.
+
+    A stub you have not filled in yet simply says so, by name. A wrong answer prints the
+    check's own message — which names the likely mistake — and the notebook carries on, so one
+    broken exercise never hides the feedback on the others. A demo names the exercises it
+    `needs`: until each has passed its check, the demo says which one it is waiting for and
+    skips, so it never runs on an answer a check has just rejected. Nothing is swallowed:
+    every outcome is recorded for the progress board, and a script run exits non-zero there if
+    any check came back wrong.
+    """
+    waiting = [name for name, _, _ in _EXERCISES   # in the order you meet them
+               if name in needs and _STATUS.get(name) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        print(f"{label}: skipped — needs {_named(waiting)} to pass first.")
+        return
+    try:
+        check()
+    except NotImplementedError as exc:
+        stub = _unfinished(exc)
+        _STATUS[label], _WAITING_ON[label] = "not started", stub
+        owner = [name for name, function in _FUNCTION.items() if function == stub]
+        if owner and owner[0] != label:
+            print(f"{label}: skipped — needs {_named(owner)} first; it still raises "
+                  "NotImplementedError.")
+        else:
+            todo = f"`{stub}`" if stub else "a stub"
+            print(f"{label}: not implemented yet — {todo} still raises NotImplementedError. "
+                  "Fill it in, then re-run this cell.")
+    except AssertionError as exc:
+        _STATUS[label] = "failed"
+        print(f"{label}: FAILED — {exc}")
+    except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
+        print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
 
 DTYPE = np.float64
 
@@ -791,6 +868,17 @@ def probe_scale_comparison(scales=(INIT_SCALE, GRADCHECK_SCALE)) -> None:
           "check by accident.")
 
 
+def _show_probe_tables() -> None:
+    """Both tables, printed once they are complete, so an unfinished exercise skips cleanly
+    instead of leaving a table header with nothing under it."""
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        probe_scale_comparison()
+        print()
+        step_size_sweep()
+    print(buffer.getvalue(), end="")
+
+
 def step_size_sweep() -> None:
     """Show the U-curve: truncation error at large h, round-off error at small h."""
     params = init_params(seed=900, scale=GRADCHECK_SCALE)
@@ -915,6 +1003,12 @@ def train(steps=TRAIN_STEPS, seed=0, report_every=500):
     return params, history
 
 
+def _run_training() -> None:
+    """Train, and keep the model for the sample and the recap — only if training succeeded."""
+    global trained
+    trained = _check_training()
+
+
 def _check_training():
     print("training (no GPU, no autodiff, one attention head):")
     params, history = train()
@@ -1003,39 +1097,89 @@ def _demo_wrong_jacobian() -> None:
 # See the comment block at the foot of this file.
 
 # %%
+def _show_heldout() -> None:
+    print(f"  held-out after training  {evaluate(trained, VAL_DATA, seed=7):.4f} nats/char")
+
+
+# The progress board. The six exercises it lists are the ones `_EXERCISES` names in the setup
+# cell.
+_MARKS = {"passed": "✅ passed     ", "failed": "❌ failed     ", "not started": "⏳ not started"}
+
+
+def _progress_board() -> None:
+    """One line per exercise, from what the checks recorded — then how many are complete."""
+    print("\nyour progress")
+    done, next_up = 0, None
+    for label, function, where in _EXERCISES:
+        status = _STATUS.get(label, "not started")
+        done += status == "passed"
+        waiting = _WAITING_ON.get(label)
+        note = (f"   (waiting on `{waiting}`)"
+                if status == "not started" and waiting not in (None, "", function) else "")
+        print(f"  {_MARKS[status]}  {label} · {function}{note}")
+        if status != "passed" and next_up is None:
+            next_up = (label, function, where)
+    print(f"\n{done} of {len(_EXERCISES)} exercises complete")
+    if next_up:
+        print(f"next: {next_up[0]} — `{next_up[1]}`, {next_up[2]}. Its cell has hints if you "
+              "are stuck.")
+
+
+def _finish() -> None:
+    """The board, then the verdict. A stub you have not reached yet is not a failure; a check
+    that ran and came back wrong is. In a script or under CI that ends the run non-zero, so a
+    green exit code can never paper over it. In a notebook kernel it is a printed line."""
+    _progress_board()
+    failed = [label for label, status in _STATUS.items() if status == "failed"]
+    if failed and "ipykernel" not in sys.modules:
+        raise SystemExit("checks failed: " + ", ".join(failed))
+    if failed:
+        print("checks failed: " + ", ".join(failed) + " — each one printed its likely mistake "
+              "where it ran.")
+
+
 if __name__ == "__main__":
-    _check_softmax()
-    _check_cross_entropy()
-    _check_attention_forward()
-    _check_model_forward()
-    _check_cross_entropy_backward()
-    _check_attention_backward()
+    _try("exercise 1", _check_softmax)
+    _try("exercise 2", _check_cross_entropy)
+    _try("exercise 3", _check_attention_forward)
+    _try("the assembled model", _check_model_forward,
+         needs=("exercise 1", "exercise 2", "exercise 3"))
+    _try("exercise 4", _check_cross_entropy_backward)
+    _try("exercise 5", _check_attention_backward)
 
     print("\n--- section 10: full gradient check ---")
-    _check_gradients()
+    _try("the full gradient check", _check_gradients, needs=_FOR_GRADIENTS)
 
     print("\n--- section 11: why the probe point matters ---")
-    probe_scale_comparison()
-    print()
-    step_size_sweep()
+    _try("the probe-point tables", _show_probe_tables, needs=_FOR_GRADIENTS)
 
     print("\n--- section 12/13: batching and training ---")
-    _check_make_batch()
+    _try("exercise 6", _check_make_batch)
     print()
-    trained = _check_training()
+    trained = None
+    _try("training", _run_training, needs=tuple(_FUNCTION))
 
     print("\n--- section 14: a sample ---")
-    print(sample(trained))
+    if trained is None:
+        print("the sample: skipped — it needs the model section 13 trains, and that needs all "
+              "six exercises.")
+    else:
+        _try("the sample", lambda: print(sample(trained)))
 
     print("\n--- section 15: watch the `A * dA` mistake get caught ---")
-    _demo_wrong_jacobian()
+    _try("the `A * dA` demonstration", _demo_wrong_jacobian,
+         needs=("exercise 1", "exercise 3", "exercise 5"))
 
     print("\n--- what you built, measured ---")
     print(f"  parameters               {sum(v.size for v in init_params().values())}")
     print(f"  uniform baseline         {UNIFORM_BASELINE:.4f} nats/char")
     print(f"  unigram entropy (train)  {UNIGRAM_BASELINE:.4f} nats/char")
-    print(f"  held-out after training  {evaluate(trained, VAL_DATA, seed=7):.4f} nats/char")
+    if trained is None:
+        print("  held-out after training  not measured yet — section 13 needs all six exercises")
+    else:
+        _try("the recap", _show_heldout)
     print("  every number above was computed by the code you just ran")
+    _finish()
 
 # %% [markdown]
 # ## Self-check answers

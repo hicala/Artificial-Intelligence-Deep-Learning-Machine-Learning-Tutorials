@@ -6,8 +6,11 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
+import io
 import sys
 import time
+import traceback
 from typing import Any, Callable, Mapping, NamedTuple
 
 import numpy as np
@@ -33,24 +36,79 @@ DATA_NOTE = (
 
 _FAILED_CHECKS: list[str] = []
 
+# The exercises, in order, and the function each one asks you to write. `_try` records the
+# latest outcome of every check in `_STATUS`; the progress board at the foot reads it.
+_EXERCISES: dict[str, str] = {
+    "exercise 1": "reliability_table",
+    "exercise 2": "expected_calibration_error",
+    "exercise 3": "population_stability_index",
+    "exercise 4": "subgroup_table",
+    "exercise 5": "challenger_decision",
+    "exercise 6": "render_validation_report",
+}
+_STATUS: dict[str, str] = {}     # label -> "passed" | "failed" | "not started"
 
-def _try(label: str, check: Callable[[], None]) -> None:
+
+def _try(label: str, check: Callable[[], None], needs: tuple = (), quiet: bool = False) -> None:
     """Run a check, or a demo that depends on your code, without derailing the notebook.
 
-    A stub you have not filled in yet simply says so. A wrong answer prints the check's own
+    A stub you have not filled in yet simply says so, and a demo that `needs` an exercise you
+    have not passed yet names that exercise and skips. A wrong answer prints the check's own
     message — which names the likely mistake — and the notebook carries on, so one broken
-    exercise never hides the feedback on the other five.
+    exercise never hides the feedback on the other five. Every outcome lands in `_STATUS`
+    for the progress board; `quiet` silences a pass or a stub, never a failure.
     """
+    waiting = [ex for ex in needs if _STATUS.get(ex) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        if len(waiting) == 1:
+            named = f"{waiting[0]} (`{_EXERCISES[waiting[0]]}`)"
+        else:
+            nums = [ex.split()[-1] for ex in waiting]
+            named = "exercises " + ", ".join(nums[:-1]) + " and " + nums[-1]
+        print(f"{label}: skipped — needs {named} first. Re-run this cell once "
+              f"{'that check passes' if len(waiting) == 1 else 'those checks pass'}.")
+        return
     try:
-        check()
-    except NotImplementedError:
-        print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+        with contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext():
+            check()
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        # The frame that raised names the stub. If it belongs to an EARLIER exercise that this
+        # one builds on, say that, rather than telling you to fill in a function you have.
+        stub = traceback.extract_tb(exc.__traceback__)[-1].name
+        owner = [ex for ex, funcs in _EXERCISES.items()
+                 if stub in funcs.split(", ") and ex != label]
+        if quiet:
+            pass
+        elif owner:
+            print(f"{label}: skipped — needs {owner[0]} (`{_EXERCISES[owner[0]]}`) first: "
+                  f"{stub}() is still a stub. Re-run this cell once that check passes.")
+        else:
+            print(f"{label}: not implemented yet — fill in the stub above, then re-run "
+                  "this cell.")
     except AssertionError as exc:
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: FAILED — {exc}")
     except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
+
+
+def _progress_board() -> None:
+    """One line per exercise, from the latest run of its check, then the tally."""
+    marks = {"passed": "✅ passed", "failed": "❌ failed", "not started": "⏳ not started"}
+    width = max(len(label) for label in _EXERCISES)
+    print("\nYOUR PROGRESS")
+    for label, function in _EXERCISES.items():
+        mark = marks[_STATUS.get(label, "not started")]
+        print(f"  {mark:<15} {label:<{width}}  {function}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    print(f"  {done} of {len(_EXERCISES)} exercises complete")
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
@@ -265,6 +323,9 @@ def _check_reliability() -> None:
     print("exercise 1 looks right")
 
 
+# %%
+_try("exercise 1", _check_reliability)
+
 # %% [markdown]
 # ## 3. Exercise 2 — `expected_calibration_error()`
 #
@@ -323,6 +384,9 @@ def _check_ece() -> None:
     )
     print("exercise 2 looks right")
 
+
+# %%
+_try("exercise 2", _check_ece)
 
 # %% [markdown]
 # ## 4. Exercise 3 — `population_stability_index()`
@@ -426,6 +490,9 @@ def _check_psi() -> None:
     print("exercise 3 looks right")
 
 
+# %%
+_try("exercise 3", _check_psi)
+
 # %% [markdown]
 # ## 5. Exercise 4 — `subgroup_table()`
 #
@@ -527,6 +594,9 @@ def _check_subgroups() -> None:
         raise AssertionError("min_support of 0 should raise ValueError")
     print("exercise 4 looks right")
 
+
+# %%
+_try("exercise 4", _check_subgroups)
 
 # %% [markdown]
 # ## 6. Exercise 5 — `challenger_decision()`
@@ -649,6 +719,9 @@ def _check_decision() -> None:
         raise AssertionError("a missing champion.ece should raise ValueError")
     print("exercise 5 looks right")
 
+
+# %%
+_try("exercise 5", _check_decision)
 
 # %% [markdown]
 # ## 7. Exercise 6 — `render_validation_report()`
@@ -806,6 +879,9 @@ def _probe_findings() -> dict:
                                  margins={"auc_gain": 0.202})}
 
 
+# %%
+_try("exercise 6", _check_report)
+
 # %% [markdown]
 # ## 8. Run the suite and generate the report
 #
@@ -851,7 +927,7 @@ def _show_report() -> None:
     assert findings["decision"].verdict in {"promote", "hold", "reject"}
 
 
-_try("the suite", _show_report)
+_try("the suite", _show_report, needs=tuple(_EXERCISES))
 
 # %% [markdown]
 # ## 9. Common mistakes
@@ -888,7 +964,7 @@ def _show_self_referential_edges() -> None:
     print("for as long as the edges are re-cut — and it will never once look broken.")
 
 
-_try("self-referential edges", _show_self_referential_edges)
+_try("self-referential edges", _show_self_referential_edges, needs=("exercise 3",))
 
 # %% [markdown]
 # ## 10. Self-check
@@ -982,15 +1058,24 @@ print(f"\nlesson wall time: {time.perf_counter() - _LESSON_T0:.1f}s")
 
 # %%
 if __name__ == "__main__":
-    for _name, _check in (("exercise 1", _check_reliability),
+    # Re-run every check against your code as it stands NOW, so the board reports your latest
+    # edit rather than whatever each check cell said the last time you ran it. Quietly: a pass
+    # or an untouched stub says nothing here, and a check that fails still says why.
+    for _label, _check in (("exercise 1", _check_reliability),
                           ("exercise 2", _check_ece),
                           ("exercise 3", _check_psi),
                           ("exercise 4", _check_subgroups),
                           ("exercise 5", _check_decision),
                           ("exercise 6", _check_report)):
-        _try(_name, _check)
-    # tools/execute.py runs this file and reads the exit code. Every check and every demo
-    # above went through _try, so a reference implementation that is quietly wrong lands here
-    # rather than in a PASS line.
-    if _FAILED_CHECKS:
+        _try(_label, _check, quiet=True)
+    _progress_board()
+    # A stub you have not reached yet is not a failure. A check that ran and came back wrong
+    # is: in a script or under CI it ends this run non-zero, rather than letting a green exit
+    # code paper over it. Inside a notebook kernel it is a printed line, never a traceback.
+    _still_failing = [label for label, state in _STATUS.items() if state == "failed"]
+    if "ipykernel" in sys.modules:
+        if _still_failing:
+            print("\nstill failing: " + ", ".join(_still_failing)
+                  + " — each one's message above names the likely mistake.")
+    elif _FAILED_CHECKS:
         raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))

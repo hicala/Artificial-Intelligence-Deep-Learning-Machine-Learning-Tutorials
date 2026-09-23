@@ -8,8 +8,10 @@
 # Setup: everything the lesson needs, in one cell, with versions printed.
 import hashlib
 import math
+import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 import mujoco
 import numpy as np
@@ -58,6 +60,63 @@ print(f"torso mass {BASE_TORSO_MASS:.1f} kg, total {MODEL.body_mass.sum():.1f} k
 print(f"torque limits (N*m): ankle {CTRL_RANGE[0]}, hip {CTRL_RANGE[1]}")
 print(f"horizon {HORIZON_STEPS} steps = {HORIZON_STEPS * MODEL.opt.timestep:.1f} s "
       f"of simulated time; a lean past {FALL_ANGLE} rad counts as fallen")
+
+
+# True in a notebook and when this file is run as a script; False when the autograder
+# imports it. Every check and demo below runs under this guard, so the cell you are sitting
+# in reports on itself, while importing the lesson never runs anything.
+_IS_MAIN = __name__ == "__main__"
+
+# The five exercises, in the order the progress board in the last cell lists them.
+_EXERCISES = {
+    "exercise 1": "rollout",
+    "exercise 2": "apply_parameters",
+    "exercise 3": "evaluate",
+    "exercise 4": "sample_conditions",
+    "exercise 5": "can_run_isaac_sim",
+}
+# label -> "passed" | "failed" | "not started": the latest verdict of every check that has
+# run. The progress board in the last cell reads it.
+_STATUS: dict = {}
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple = ()) -> None:
+    """Run a check, or a demo that depends on your code, without derailing the notebook.
+
+    A stub you have not filled in yet simply says so. A wrong answer prints the check's own
+    message — which names the likely mistake — and the notebook carries on, so one broken
+    exercise never hides the feedback on the others. Nothing is swallowed: every verdict is
+    recorded in `_STATUS`, and the last cell exits non-zero if any check came back wrong when
+    this file runs as a script.
+
+    `needs` names the exercises a demo consumes. Until each of them has passed its own check,
+    the demo says which one it is waiting for and skips, instead of failing on its behalf.
+    """
+    waiting = [n for n in needs if _STATUS.get(n) != "passed"]
+    if waiting:
+        _STATUS.pop(label, None)
+        one = len(waiting) == 1
+        names = [f"{n} ({_EXERCISES[n]})" for n in waiting] if len(waiting) <= 2 else waiting
+        names = names[0] if one else ", ".join(names[:-1]) + " and " + names[-1]
+        print(f"{label}: skipped — it needs {names} to pass first. Finish "
+              f"{'that' if one else 'those'}, re-run "
+              + ("its check cell" if one else "their check cells") + ", then re-run this one.")
+        return
+    try:
+        check()
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        print(f"{label}: " + (f"not started yet — {exc}" if str(exc) else
+                              "not implemented yet — fill in the stub above")
+              + ", then re-run this cell.")
+    except AssertionError as exc:
+        _STATUS[label] = "failed"
+        print(f"{label}: FAILED — {exc}")
+    except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
+        print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
 
 # %% [markdown]
 # ## 1. The gap is not one thing, it is four
@@ -166,6 +225,10 @@ def _check_rollout() -> None:
           f"saturated {r['saturated_fraction']:.0%} of the episode")
 
 
+if _IS_MAIN:
+    _try("exercise 1", _check_rollout)
+
+
 # %% [markdown]
 # ## 3. Saturation: the lie the controller is never told
 
@@ -220,6 +283,10 @@ def _check_apply_parameters() -> None:
     print("exercise 2 looks right: mass and friction set from baseline, no compounding")
 
 
+if _IS_MAIN:
+    _try("exercise 2", _check_apply_parameters)
+
+
 # %% [markdown]
 # ## 5. Exercise 3 — `evaluate`, one condition end to end
 
@@ -262,6 +329,11 @@ def _check_evaluate() -> None:
         "mass. apply_parameters must set from the baseline on every call."
     )
     print("exercise 3 looks right: conditions apply, and they do not leak into each other")
+
+
+# evaluate hands its work to your rollout and apply_parameters, so it waits for both.
+if _IS_MAIN:
+    _try("exercise 3", _check_evaluate, needs=("exercise 1", "exercise 2"))
 
 
 # %% [markdown]
@@ -320,6 +392,11 @@ def _check_sweeps() -> None:
           f"{wobble_ratio:.1f}x while pinning the ankle at its limit for "
           f"{fric[-1][1]['saturated_fraction']:.0%} of the episode."
           "\nSurvival is not the only thing worth measuring, and it is often the last to move.")
+
+
+if _IS_MAIN:
+    _try("the sweeps", _check_sweeps,
+         needs=("exercise 1", "exercise 2", "exercise 3"))
 
 
 # %% [markdown]
@@ -404,6 +481,10 @@ def _check_sample_conditions() -> None:
     print("exercise 4 looks right: reproducible, in range, one rollout seed per condition")
 
 
+if _IS_MAIN:
+    _try("exercise 4", _check_sample_conditions)
+
+
 # %% [markdown]
 # ## 8. Does it actually narrow the gap?
 
@@ -452,6 +533,11 @@ def _check_comparison() -> None:
     )
     print("\n  100% on the model you tuned on is not a result. It is the definition of the"
           "\n  model you tuned on. Only the held-out column is evidence of anything.")
+
+
+if _IS_MAIN:
+    _try("the held-out comparison", _check_comparison,
+         needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4"))
 
 
 # %% [markdown]
@@ -520,6 +606,10 @@ def _check_can_run_isaac_sim() -> None:
           "\nlacking RT Cores. Check the claim, not the folklore.")
 
 
+if _IS_MAIN:
+    _try("exercise 5", _check_can_run_isaac_sim)
+
+
 # %% [markdown]
 # ## 10. The hardware ladder, with prices that carry their receipts
 
@@ -563,6 +653,10 @@ def ladder_table(ladder: list = HARDWARE_LADDER) -> None:
                   f"GPU-hours of Isaac Sim")
     print("\nEvery source URL is in claims.yaml with the date it was read. Prices move; the"
           "\nmethod of checking them before you repeat them does not.")
+
+
+if _IS_MAIN:
+    ladder_table()
 
 
 # %% [markdown]
@@ -611,20 +705,19 @@ def _check_self_check(answers: dict = None) -> None:
     print("self-check: all four right")
 
 
+def _check_self_check_answered() -> None:
+    """The self-check, through the guard: four question marks are not started, not wrong."""
+    if all(str(v).strip() == "?" for v in SELF_CHECK.values()):
+        raise NotImplementedError("put your four letters in SELF_CHECK above")
+    _check_self_check()
+
+
+if _IS_MAIN:
+    _try("self-check", _check_self_check_answered)
+
+
 # %% [markdown]
 # ## What you built, and where it goes next
-
-# %%
-if __name__ == "__main__":
-    _check_rollout()
-    _check_apply_parameters()
-    _check_evaluate()
-    _check_sweeps()
-    _check_sample_conditions()
-    _check_comparison()
-    _check_can_run_isaac_sim()
-    ladder_table()
-    _check_self_check()
 
 # %% [markdown]
 # ## Self-check answers
@@ -658,3 +751,28 @@ if __name__ == "__main__":
 # one; (b) is wrong on the mechanics — a stale command is a larger command by the time it
 # lands; (d) treats the instrument as the problem, and a torque limit you raise in simulation
 # is a motor you do not own.
+
+# %%
+# Your progress board. It reads the verdict each check cell recorded the last time it ran, so
+# after you fix an exercise, re-run that exercise's check cell and then this one.
+def _progress_board() -> list:
+    """Print one line per exercise, then the tally. Returns the labels that came back wrong."""
+    marks = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+    print("\nprogress board")
+    for label, what in _EXERCISES.items():
+        state = _STATUS.get(label, "not started")
+        print(f"  {marks[state]} {label}  {what:<20s} {state}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    print(f"\n{done} of {len(_EXERCISES)} exercises complete")
+    return [label for label, state in _STATUS.items() if state == "failed"]
+
+
+if _IS_MAIN:
+    _failed = _progress_board()
+    # A stub you have not reached yet is not a failure. A check that ran and came back wrong
+    # is: in a script or under CI it ends the run non-zero, so a green exit code cannot paper
+    # over it. Inside a notebook kernel the same verdict is a printed line, not a traceback.
+    if _failed and "ipykernel" not in sys.modules:
+        raise SystemExit("checks failed: " + ", ".join(_failed))
+    if _failed:
+        print("checks failed: " + ", ".join(_failed) + " — each printed its reason above")

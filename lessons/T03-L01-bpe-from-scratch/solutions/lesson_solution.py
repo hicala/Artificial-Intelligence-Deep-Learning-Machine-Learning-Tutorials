@@ -6,8 +6,11 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
+import io
 import sys
 import time
+import traceback
 from typing import Callable, NamedTuple
 
 _LESSON_T0 = time.perf_counter()
@@ -20,25 +23,73 @@ VOCAB_SIZE = 768        # the budget every table in this lesson is measured at
 _WHITESPACE = frozenset(b" \t\n\r\f\v")
 
 _FAILED_CHECKS: list[str] = []
+_STATUS: dict[str, str] = {}  # label -> "passed" | "failed" | "not started"
+
+# The exercises, in the order you meet them. The progress board at the foot of the
+# notebook is built from this, and a demo that is waiting on one names it from here.
+_EXERCISES = {
+    "exercise 1": "get_stats()",
+    "exercise 2": "merge()",
+    "exercise 3": "best_pair()",
+    "exercise 4": "train_bpe()",
+    "exercise 5": "encode() and decode()",
+    "exercise 6": "token_tax()",
+}
 
 
-def _try(label: str, check: Callable[[], None]) -> None:
+def _try(label: str, check: Callable[[], None], needs: tuple[str, ...] = ()) -> None:
     """Run a check without derailing the notebook; record anything that actually failed.
 
     Nothing is swallowed: the `__main__` block at the foot of this file exits non-zero if the
     list is not empty, which is what stops tools/execute.py from reporting PASS on a reference
     implementation that is quietly wrong.
+
+    A demo names the exercises it `needs`. Until each of them has passed its check, the demo
+    says which one it is waiting for and skips, rather than failing half-way through its
+    output. Every outcome is recorded in `_STATUS`, which the progress board at the foot reads.
     """
+    waiting = [name for name in needs if _STATUS.get(name) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        todo = ", ".join(f"{name} ({_EXERCISES[name]})" for name in waiting)
+        print(f"{label}: skipped — this needs {todo} to pass first.")
+        return
     try:
         check()
-    except NotImplementedError:
-        print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        stub = traceback.extract_tb(exc.__traceback__)[-1].name
+        print(f"{label}: not implemented yet — fill in {stub}() above, then re-run this cell.")
     except AssertionError as exc:
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: FAILED — {exc}")
     except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
+
+
+_MARKS = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+
+
+def _progress_board() -> None:
+    """One line per exercise, marked passed, failed or not started, then the tally."""
+    width = max(len(what) for what in _EXERCISES.values())
+    print("progress board")
+    for label, what in _EXERCISES.items():
+        state = _STATUS.get(label, "not started")
+        print(f"  {_MARKS[state]} {label:<11} {what:<{width}}  {state}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    print(f"\n{done} of {len(_EXERCISES)} exercises complete")
+    failing = [label for label, state in _STATUS.items() if state == "failed"]
+    if failing:
+        print("failing right now: " + ", ".join(failing) + ". Each one printed what went wrong "
+              "in its own cell above, and every exercise heading has hints you can open.")
+    elif done < len(_EXERCISES):
+        print("work top to bottom: every exercise heading has hints you can open.")
 
 
 # %% [markdown]
@@ -421,7 +472,7 @@ def _check_train_bpe() -> None:
 
 # %%
 if __name__ == "__main__":
-    _try("exercise 4", _check_train_bpe)
+    _try("exercise 4", _check_train_bpe, needs=("exercise 1", "exercise 2", "exercise 3"))
 
 # %% [markdown]
 # ## 9. Exercise 5 — `encode` and `decode`
@@ -496,7 +547,7 @@ def _check_encode_decode() -> None:
 
 # %%
 if __name__ == "__main__":
-    _try("exercise 5", _check_encode_decode)
+    _try("exercise 5", _check_encode_decode, needs=("exercise 2", "exercise 4"))
 
 # %% [markdown]
 # ## 10. Exercise 6 — measure the tax
@@ -549,7 +600,7 @@ def _check_token_tax() -> None:
 
 # %%
 if __name__ == "__main__":
-    _try("exercise 6", _check_token_tax)
+    _try("exercise 6", _check_token_tax, needs=("exercise 4", "exercise 5"))
 
 # %% [markdown]
 # ### The measured table
@@ -582,7 +633,7 @@ def _show_tax() -> None:
 
 # %%
 if __name__ == "__main__":
-    _try("the tax table", _show_tax)
+    _try("the tax table", _show_tax, needs=("exercise 4", "exercise 6"))
 
 # %% [markdown]
 # ## 11. Check your trainer against a real one
@@ -617,7 +668,8 @@ def _show_reference_comparison() -> None:
 
 # %%
 if __name__ == "__main__":
-    _try("reference comparison", _show_reference_comparison)
+    _try("reference comparison", _show_reference_comparison,
+         needs=("exercise 4", "exercise 5"))
 
 # %% [markdown]
 # ## 12. The tax is the corpus, not the algorithm
@@ -662,7 +714,7 @@ def _show_the_fix() -> None:
 
 # %%
 if __name__ == "__main__":
-    _try("the fix", _show_the_fix)
+    _try("the fix", _show_the_fix, needs=("exercise 4", "exercise 6"))
 
 # %% [markdown]
 # ## 13. Common mistakes — the advance-by-one bug, run rather than described
@@ -694,19 +746,31 @@ def _show_the_bug() -> None:
 
 # %%
 if __name__ == "__main__":
-    _try("the advance-by-one bug", _show_the_bug)
+    _try("the advance-by-one bug", _show_the_bug, needs=("exercise 2",))
 
 # %%
+# Your progress board. Every check is re-run here, quietly, against your code as it stands
+# now — each one already printed its feedback in its own cell above — so the board is
+# current even if you edited an exercise and did not re-run its check.
 if __name__ == "__main__":
-    for _name, _check in (("exercise 1", _check_get_stats),
-                          ("exercise 2", _check_merge),
-                          ("exercise 3", _check_best_pair),
-                          ("exercise 4", _check_train_bpe),
-                          ("exercise 5", _check_encode_decode),
-                          ("exercise 6", _check_token_tax)):
-        _try(_name, _check)
-    print(f"\nlesson wall time so far: {time.perf_counter() - _LESSON_T0:.1f}s")
-    if _FAILED_CHECKS:
+    _ALL_CHECKS = (  # (exercise, its check, the exercises that check relies on)
+        ("exercise 1", _check_get_stats, ()),
+        ("exercise 2", _check_merge, ()),
+        ("exercise 3", _check_best_pair, ()),
+        ("exercise 4", _check_train_bpe, ("exercise 1", "exercise 2", "exercise 3")),
+        ("exercise 5", _check_encode_decode, ("exercise 2", "exercise 4")),
+        ("exercise 6", _check_token_tax, ("exercise 4", "exercise 5")),
+    )
+    with contextlib.redirect_stdout(io.StringIO()):
+        for _name, _check, _needs in _ALL_CHECKS:
+            _try(_name, _check, needs=_needs)
+    print(f"lesson wall time so far: {time.perf_counter() - _LESSON_T0:.1f}s\n")
+    _progress_board()
+    # A stub you have not reached yet is not a failure. A check that ran and came back wrong
+    # is: in a script or under CI it ends the run non-zero, rather than letting a green exit
+    # code paper over it. Inside a notebook kernel the board above has already said so, in a
+    # line rather than a traceback at the foot of the page.
+    if _FAILED_CHECKS and "ipykernel" not in sys.modules:
         raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))
 
 # %% [markdown]

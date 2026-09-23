@@ -48,11 +48,14 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
+import io
 import random
 import re
 import sys
 import time
-from typing import NamedTuple, Sequence
+import traceback
+from typing import Callable, NamedTuple, Sequence
 
 import numpy as np
 
@@ -92,24 +95,69 @@ COMPANY_SUFFIXES = frozenset({
 
 _FAILED_CHECKS: list[str] = []
 
+# The exercises, in the order you meet them, and the functions each one asks you to write.
+# The progress board at the foot of the notebook is built from this, and a cell that is
+# waiting on an unfinished exercise names it from here.
+_EXERCISES: dict[str, tuple[str, ...]] = {
+    "exercise 1": ("word_shape",),
+    "exercise 2": ("token_features",),
+    "exercise 3": ("decode_spans",),
+    "exercise 4": ("sequence_scores",),
+    "exercise 5": ("viterbi_decode",),
+    "exercise 6": ("perceptron_update",),
+    "exercise 7": ("improvement_table", "fields_improved"),
+}
+_STATUS: dict[str, str] = {}   # label -> "passed" | "failed" | "not started", latest run
 
-def _try(label: str, check) -> None:
+
+def _named(labels: list[str]) -> str:
+    """["exercise 1"] -> "exercise 1 (word_shape)"; several -> "exercises 2, 3 and 5"."""
+    if len(labels) == 1:
+        return f"{labels[0]} ({', '.join(_EXERCISES[labels[0]])})"
+    nums = [label.split()[-1] for label in labels]
+    return "exercises " + ", ".join(nums[:-1]) + " and " + nums[-1]
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple[str, ...] = ()) -> None:
     """Run a check, or a demo that depends on your code, without derailing the notebook.
 
     A stub you have not filled in yet simply says so. A wrong answer prints the check's own
     message — which names the likely mistake — and the notebook carries on, so one broken
-    exercise never hides the feedback on the other six.
+    exercise never hides the feedback on the others. A demo names the exercises it `needs`:
+    until each has passed its check, the demo says which one it is waiting for and skips.
+    Nothing is swallowed: every outcome is recorded in `_STATUS` for the progress board at the
+    foot of the notebook, and every failure in `_FAILED_CHECKS`, which ends a script run
+    non-zero.
     """
+    waiting = [name for name in _EXERCISES   # in the order you meet them
+               if name in needs and _STATUS.get(name) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        print(f"{label}: skipped — needs {_named(waiting)} to pass first.")
+        return
     try:
         check()
-    except NotImplementedError:
-        print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        stub = traceback.extract_tb(exc.__traceback__)[-1].name   # the frame that raised
+        owner = [name for name, funcs in _EXERCISES.items() if stub in funcs and name != label]
+        if owner:
+            print(f"{label}: skipped — needs {_named(owner)} first.")
+        elif label in _EXERCISES:
+            print(f"{label}: not implemented yet — fill in {stub}() above, then re-run "
+                  "this cell.")
+        else:
+            print(f"{label}: skipped — {stub}() is not implemented yet.")
     except AssertionError as exc:
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: FAILED — {exc}")
-    except Exception as exc:
+    except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
 
 
 # %% [markdown]
@@ -695,7 +743,7 @@ def _show_gold_roundtrip() -> None:
           f"before you go hunting for the missing points.")
 
 
-_try("gold round-trip", _show_gold_roundtrip)
+_try("gold round-trip", _show_gold_roundtrip, needs=("exercise 3",))
 
 # %% [markdown]
 # ## 7. The model, and the feature index
@@ -776,7 +824,7 @@ def _build_index() -> None:
           f"gap is where a held-out\nsupplier name goes.")
 
 
-_try("feature index", _build_index)
+_try("feature index", _build_index, needs=("exercise 1", "exercise 2"))
 
 # %% [markdown]
 # ## 8. Exercise 4 — `sequence_scores`
@@ -1035,6 +1083,10 @@ TAGGER_RECORDS: list[dict] | None = None
 
 def _train() -> None:
     global TAGGER, TAGGER_RECORDS
+    if not FEATURE_INDEX:   # exercise 2 passed after the feature-index cell in section 7 ran
+        print("training: skipped — the feature index is empty. Re-run the feature-index cell "
+              "in section 7, then this one.")
+        return
     t0 = time.perf_counter()
     print(f"training the structured perceptron ({len(TRAIN_DOCS)} documents per pass):")
     raw_model = train_tagger()
@@ -1042,13 +1094,17 @@ def _train() -> None:
     TAGGER_RECORDS = records_from(TAGGER, TEST_DOCS, FEATURE_INDEX)
     raw_f1 = macro_f1(records_from(raw_model, TEST_DOCS, FEATURE_INDEX), "normalised")
     avg_f1 = macro_f1(TAGGER_RECORDS, "normalised")
-    print(f"trained in {time.perf_counter() - t0:.1f}s")
+    seconds = time.perf_counter() - t0
+    # Whole-run timings differ between machines at the first decimal; the claim this line
+    # supports is the one the introduction makes, so print it in those terms.
+    print("trained in " + ("under a second" if seconds < 1 else f"{seconds:.1f}s"))
     print(f"final weights   held-out macro F1 {raw_f1:.4f}")
     print(f"averaged        held-out macro F1 {avg_f1:.4f}   ({avg_f1 - raw_f1:+.4f})")
     print("Everything below uses the averaged weights.")
 
 
-_try("training", _train)
+_try("training", _train,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5", "exercise 6"))
 
 # %% [markdown]
 # ## 12. Same scorer, different extractor
@@ -1060,8 +1116,10 @@ _try("training", _train)
 
 # %%
 def _show_side_by_side() -> None:
-    if TAGGER_RECORDS is None:
-        raise NotImplementedError
+    if TAGGER_RECORDS is None:   # your exercises pass, but the training cell has not
+        print("side by side: skipped — no trained tagger yet. Run the training cell in "
+              "section 11 first.")
+        return
     print(f"{'field':22s}{'baseline F1':>13s}{'tagger F1':>12s}   {'delta':>7s}")
     for f in FIELDS:
         b = score_field(BASELINE_RECORDS, f, "normalised").f1
@@ -1071,7 +1129,8 @@ def _show_side_by_side() -> None:
     print(f"{'macro F1':22s}{base:13.3f}{tag:12.3f}   {tag - base:+7.3f}")
 
 
-_try("side by side", _show_side_by_side)
+_try("side by side", _show_side_by_side,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5", "exercise 6"))
 
 # %% [markdown]
 # Three documents where the two disagree, printed side by side. A number is an argument; a
@@ -1079,8 +1138,10 @@ _try("side by side", _show_side_by_side)
 
 # %%
 def _show_disagreements(limit: int = 3) -> None:
-    if TAGGER_RECORDS is None:
-        raise NotImplementedError
+    if TAGGER_RECORDS is None:   # your exercises pass, but the training cell has not
+        print("disagreements: skipped — no trained tagger yet. Run the training cell in "
+              "section 11 first.")
+        return
     shown = 0
     for base, tagged in zip(BASELINE_RECORDS, TAGGER_RECORDS):
         diffs = [f for f in FIELDS
@@ -1097,7 +1158,8 @@ def _show_disagreements(limit: int = 3) -> None:
             break
 
 
-_try("disagreements", _show_disagreements)
+_try("disagreements", _show_disagreements,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5", "exercise 6"))
 
 # %% [markdown]
 # ## 13. Exercise 7 — `improvement_table`
@@ -1210,8 +1272,10 @@ def _diagnose(records: Sequence[dict], field: str) -> dict[str, int]:
 
 def _show_improvement() -> None:
     global IMPROVEMENT
-    if TAGGER_RECORDS is None:
-        raise NotImplementedError
+    if TAGGER_RECORDS is None:   # your exercises pass, but the training cell has not
+        print("improvement table: skipped — no trained tagger yet. Run the training cell in "
+              "section 11 first.")
+        return
     IMPROVEMENT = improvement_table(BASELINE_RECORDS, TAGGER_RECORDS)
     won = fields_improved(IMPROVEMENT)
     lost = sorted(i.field for i in IMPROVEMENT.values() if i.delta <= -0.01)
@@ -1231,7 +1295,9 @@ def _show_improvement() -> None:
             print(f"  {f:20s} " + "  ".join(f"{k}={v}" for k, v in kinds.items() if v))
 
 
-_try("improvement table", _show_improvement)
+_try("improvement table", _show_improvement,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5", "exercise 6",
+            "exercise 7"))
 
 # %% [markdown]
 # Read those two tables against each other before you read on. The rule list and the tagger do
@@ -1285,8 +1351,10 @@ def _mean_span_len(records: Sequence[dict], field: str, key: str = "pred") -> fl
 
 
 def _show_greedy_vs_viterbi() -> None:
-    if TAGGER is None or TAGGER_RECORDS is None:
-        raise NotImplementedError
+    if TAGGER is None or TAGGER_RECORDS is None:   # the training cell has not run
+        print("greedy vs viterbi: skipped — no trained tagger yet. Run the training cell in "
+              "section 11 first.")
+        return
     greedy_records = []
     for doc in TEST_DOCS:
         emissions = sequence_scores(TAGGER, encode_tokens(doc["tokens"], FEATURE_INDEX))
@@ -1313,7 +1381,8 @@ def _show_greedy_vs_viterbi() -> None:
     print(f"  viterbi           {_mean_span_len(TAGGER_RECORDS, split):.2f}")
 
 
-_try("greedy vs viterbi", _show_greedy_vs_viterbi)
+_try("greedy vs viterbi", _show_greedy_vs_viterbi,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5", "exercise 6"))
 
 # %% [markdown]
 # Read the sign of that macro delta before you decide what it means, because it is not
@@ -1375,8 +1444,10 @@ _try("greedy vs viterbi", _show_greedy_vs_viterbi)
 
 # %%
 def _show_scorecard() -> None:
-    if TAGGER_RECORDS is None or IMPROVEMENT is None:
-        raise NotImplementedError
+    if TAGGER_RECORDS is None or IMPROVEMENT is None:   # a cell it reads has not run
+        print("scorecard: skipped — run the training cell in section 11 and the "
+              "improvement-table cell in section 13 first.")
+        return
     base_macro = macro_f1(BASELINE_RECORDS, "normalised")
     tag_macro = macro_f1(TAGGER_RECORDS, "normalised")
     worst = min(IMPROVEMENT.values(), key=lambda i: i.delta)
@@ -1394,7 +1465,9 @@ def _show_scorecard() -> None:
           f"                        keep the rule on {worst.field}, where it is still ahead")
 
 
-_try("scorecard", _show_scorecard)
+_try("scorecard", _show_scorecard,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5", "exercise 6",
+            "exercise 7"))
 
 # %% [markdown]
 # ## What you built, and where it goes next
@@ -1415,18 +1488,46 @@ _try("scorecard", _show_scorecard)
 # all. The scorer does not move.
 
 # %%
+_MARKS = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+
+
+def _progress_board() -> None:
+    """One line per exercise, from the latest run of its check, then the tally."""
+    width = max(len(", ".join(funcs)) for funcs in _EXERCISES.values())
+    print("progress board")
+    for label, funcs in _EXERCISES.items():
+        state = _STATUS.get(label, "not started")
+        print(f"  {_MARKS[state]} {label:<12} {', '.join(funcs):<{width}}  {state}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    print(f"\n{done} of {len(_EXERCISES)} exercises complete")
+    failing = [label for label in _EXERCISES if _STATUS.get(label) == "failed"]
+    if failing:
+        print("failing right now: " + ", ".join(failing) + ". Each one printed what went "
+              "wrong in its own cell above, and every exercise has hints you can open.")
+    elif done < len(_EXERCISES):
+        print("work top to bottom: every exercise has hints you can open above its code.")
+
+
+# Your progress board. Every check is re-run here, quietly, against your code as it stands
+# now — each one already printed its feedback in its own cell above — so the board is
+# current even if you edited an exercise and did not re-run its check.
 if __name__ == "__main__":
-    for _name, _check in (("exercise 1", _check_word_shape),
-                          ("exercise 2", _check_token_features),
-                          ("exercise 3", _check_decode_spans),
-                          ("exercise 4", _check_sequence_scores),
-                          ("exercise 5", _check_viterbi),
-                          ("exercise 6", _check_perceptron_update),
-                          ("exercise 7", _check_improvement)):
-        _try(_name, _check)
-    print(f"\nlesson wall time so far: {time.perf_counter() - _LESSON_T0:.1f}s")
-    # A stub you have not reached yet is not a failure — it prints "not implemented yet" and
-    # the notebook carries on. A check that RAN and came back wrong is a failure, and it ends
-    # this run non-zero rather than letting a green exit code paper over it.
-    if _FAILED_CHECKS:
+    with contextlib.redirect_stdout(io.StringIO()):
+        for _name, _check in (("exercise 1", _check_word_shape),
+                             ("exercise 2", _check_token_features),
+                             ("exercise 3", _check_decode_spans),
+                             ("exercise 4", _check_sequence_scores),
+                             ("exercise 5", _check_viterbi),
+                             ("exercise 6", _check_perceptron_update),
+                             ("exercise 7", _check_improvement)):
+            _try(_name, _check)
+    _progress_board()
+    _wall = time.perf_counter() - _LESSON_T0
+    # Whole seconds: two machines disagree at the first decimal, and that is noise, not a result.
+    print("\nlesson wall time so far: " + ("under a second" if _wall < 1 else f"{_wall:.0f}s"))
+    # A stub you have not reached yet is not a failure. A check that ran and came back wrong
+    # is: in a script or under CI it ends this run non-zero, rather than letting a green exit
+    # code paper over it. Inside a notebook kernel the board above has already said so, in a
+    # line rather than a traceback at the foot of the page.
+    if _FAILED_CHECKS and "ipykernel" not in sys.modules:
         raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))

@@ -40,7 +40,9 @@
 # %%
 # Setup: everything the lesson needs, in one cell. Standard library only — a documentation
 # generator you cannot run without a vendor's SDK is a generator an auditor cannot re-run.
+import contextlib
 import hashlib
+import io
 import json
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -83,26 +85,77 @@ def content_hash(payload: Any) -> str:
     return hashlib.sha256(canonical_bytes(payload)).hexdigest()
 
 
-_FAILED_CHECKS: list[str] = []
+# Every check and every demo below reports how it went here, and the progress board at the
+# foot of the notebook reads it: label -> "passed", "failed" or "not started". Each run of a
+# cell overwrites its own entry, so the board shows where your code stands now.
+_STATUS: dict[str, str] = {}
 
 
-def _try(label: str, check: Callable[[], None]) -> None:
+def _and(items: list) -> str:
+    """'a', 'a and b', 'a, b and c' — for naming exercises in a sentence."""
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple = (),
+         builds_on: tuple = ()) -> None:
     """Run a check, or a demo that depends on your code, without derailing the notebook.
 
     A stub you have not filled in yet simply says so. A wrong answer prints the check's own
     message — which names the likely mistake — and the notebook carries on, so one broken
-    exercise never hides the feedback on the other five.
+    exercise never hides the feedback on the other five. Every outcome is recorded for the
+    progress board, and outside a notebook the `__main__` block at the foot of this file exits
+    non-zero if any check is still failing.
+
+    `needs` names the exercises a demo consumes. Until each has passed its check, the demo says
+    which it is waiting for and skips, rather than running on a stub or on a wrong answer.
+    `builds_on` names the earlier exercises a check also calls. The check always runs, but
+    when one of those has not passed yet it says so, so you fix the right function first.
     """
+    waiting = [need for need in needs if _STATUS.get(need) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        print(f"{label}: skipped — needs {_and(waiting)} to pass "
+              f"{'its check' if len(waiting) == 1 else 'their checks'} first, then re-run "
+              "this cell.")
+        return
+    behind = [need for need in builds_on if _STATUS.get(need) != "passed"]
+    note = (f" (It also runs your {_and(behind)}, which "
+            f"{'has' if len(behind) == 1 else 'have'} not passed yet: start there.)"
+            if behind else "")
     try:
         check()
     except NotImplementedError:
-        print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+        _STATUS[label] = "not started"
+        print(f"{label}: not implemented yet — fill in the stub above, then re-run this "
+              f"cell.{note}")
     except AssertionError as exc:
-        _FAILED_CHECKS.append(label)
-        print(f"{label}: FAILED — {exc}")
+        _STATUS[label] = "failed"
+        print(f"{label}: FAILED — {exc}{note}")
     except Exception as exc:  # a half-finished implementation raising something else
-        _FAILED_CHECKS.append(label)
-        print(f"{label}: raised {type(exc).__name__}: {exc}")
+        _STATUS[label] = "failed"
+        print(f"{label}: raised {type(exc).__name__}: {exc}{note}")
+    else:
+        _STATUS[label] = "passed"
+
+
+def _progress_board(exercises: tuple) -> list:
+    """Re-check every exercise against your code as it stands now, and print the board.
+
+    The checks run quietly here — each already printed its message in its own cell — so the
+    board also picks up anything you fixed after running those cells. Returns the labels of
+    every check or demo that is still failing.
+    """
+    for label, _title, check in exercises:
+        with contextlib.redirect_stdout(io.StringIO()):
+            _try(label, check)
+    marks = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+    print("progress board")
+    for label, title, _check in exercises:
+        state = _STATUS[label]
+        print(f"  {marks[state]} {state:11s}  {label} · {title}")
+    done = sum(_STATUS[label] == "passed" for label, _title, _check in exercises)
+    print(f"\n{done} of {len(exercises)} exercises complete")
+    return [label for label, state in _STATUS.items() if state == "failed"]
 
 
 # %% [markdown]
@@ -654,7 +707,7 @@ def _check_check_section() -> None:
     print("exercise 3 ok · absent, blank and unmet-either/or are three different verdicts")
 
 
-_try("exercise 3", _check_check_section)
+_try("exercise 3", _check_check_section, builds_on=("exercise 1", "exercise 2"))
 
 # %%
 def _show_completeness() -> None:
@@ -673,7 +726,8 @@ def _show_completeness() -> None:
           "which is what an honest\nmid-programme pack looks like.")
 
 
-_try("completeness report", _show_completeness)
+_try("completeness report", _show_completeness,
+     needs=("exercise 1", "exercise 2", "exercise 3"))
 
 # %% [markdown]
 # ## 7. Exercise 4 — `provenance_stamp()`: which artefact, which run, which bytes
@@ -852,7 +906,8 @@ def _check_render_document() -> None:
           f"{len(doc['omitted'])} refused with reasons")
 
 
-_try("exercise 5", _check_render_document)
+_try("exercise 5", _check_render_document,
+     builds_on=("exercise 1", "exercise 2", "exercise 3", "exercise 4"))
 
 # %% [markdown]
 # ## 9. Exercise 6 — `staleness_report()`: the day the document stopped being true
@@ -971,7 +1026,7 @@ def _check_staleness_report() -> None:
     print("exercise 6 ok · the hand-edit is caught, the re-run is not flagged")
 
 
-_try("exercise 6", _check_staleness_report)
+_try("exercise 6", _check_staleness_report, builds_on=("exercise 5",))
 
 # %% [markdown]
 # ## 10. The artefact: the document, its provenance table and its verdict
@@ -1002,7 +1057,8 @@ def _emit_document() -> None:
           f"sections sourced")
 
 
-_try("the document", _emit_document)
+_try("the document", _emit_document,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5"))
 
 
 # %%
@@ -1028,7 +1084,9 @@ def _emit_staleness() -> None:
           "of the real drift.")
 
 
-_try("the staleness verdict", _emit_staleness)
+_try("the staleness verdict", _emit_staleness,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5",
+            "exercise 6"))
 
 # %% [markdown]
 # ## 11. Common mistakes
@@ -1168,20 +1226,6 @@ def check_self_check(answers: dict) -> None:
 #
 # **Again, and finally: this is engineering, not legal advice.**
 
-# %%
-if __name__ == "__main__":
-    for _name, _check in (("exercise 1", _check_field_value),
-                          ("exercise 2", _check_is_sourced),
-                          ("exercise 3", _check_check_section),
-                          ("exercise 4", _check_provenance_stamp),
-                          ("exercise 5", _check_render_document),
-                          ("exercise 6", _check_staleness_report)):
-        _try(_name, _check)
-    # A stub nobody has reached yet is not a failure. A check that ran and came back wrong is,
-    # and it ends this run non-zero rather than letting a green exit code paper over it.
-    if _FAILED_CHECKS:
-        raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))
-
 # %% [markdown]
 # ## Self-check answers (solution bundle only)
 #
@@ -1214,3 +1258,30 @@ if __name__ == "__main__":
 # %%
 if __name__ == "__main__":
     print("\nself-check key:", {q: a for q, a in zip(sorted(_SELF_CHECK_KEY), "bcabb")})
+
+# %% [markdown]
+# ## Your progress
+#
+# The cell below re-runs every exercise's check against your code as it stands now, and
+# prints one line per exercise: ✅ passed, ❌ failed or ⏳ not started. Run it whenever you like.
+
+# %%
+if __name__ == "__main__":
+    _failing = _progress_board((
+        ("exercise 1", "field_value()", _check_field_value),
+        ("exercise 2", "is_sourced()", _check_is_sourced),
+        ("exercise 3", "check_section()", _check_check_section),
+        ("exercise 4", "provenance_stamp()", _check_provenance_stamp),
+        ("exercise 5", "render_document()", _check_render_document),
+        ("exercise 6", "staleness_report()", _check_staleness_report),
+    ))
+    # A stub nobody has reached yet is not a failure. A check that ran and came back wrong is:
+    # in a script or under CI it ends the run non-zero, rather than letting a green exit code
+    # paper over it. Inside a notebook kernel that would be a traceback at the foot of the
+    # page, so there it is one printed line instead.
+    if _failing:
+        if "ipykernel" in sys.modules:
+            print("\nstill failing: " + ", ".join(_failing)
+                  + ". Each one's own cell above says what went wrong.")
+        else:
+            raise SystemExit("checks failed: " + ", ".join(_failing))

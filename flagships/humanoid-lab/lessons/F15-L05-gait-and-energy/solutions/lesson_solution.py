@@ -8,6 +8,7 @@
 # Setup: everything the lesson needs, in one cell, with versions printed.
 import hashlib
 import math
+import sys
 import time
 from pathlib import Path
 
@@ -59,6 +60,69 @@ print(f"model: nq={MODEL.nq} nv={MODEL.nv} nu={MODEL.nu} dt={DT} s")
 print(f"total mass {TOTAL_MASS:.2f} kg, gravity {GRAVITY:.2f} m/s^2, "
       f"weight {TOTAL_MASS * GRAVITY:.1f} N")
 print(f"horizon {HORIZON_STEPS} steps = {HORIZON_STEPS * DT:.1f} s of simulated time")
+
+
+# The notebook's guard. Every check, and every table that runs your code, goes through _try:
+# an unfilled stub says so, a wrong answer prints its check's hint and the notebook carries
+# on, and a table that needs an exercise you have not finished names it and skips. The
+# progress board in the last cell reads the verdicts it records.
+_BOARD = {                      # label -> what it grades, in the order the board lists them
+    "exercise 1": "gait_targets",
+    "exercise 2": "rollout",
+    "exercise 3": "cost_of_transport",
+    "exercise 4": "coordinate_search",
+    "self-check": "the four questions in section 9",
+}
+_STATUS: dict = {}              # label -> "passed" | "failed" | "not started"
+
+
+def _unfinished(exc: BaseException) -> str:
+    """Say which stub stopped a check: the message it carries, or the function that raised."""
+    if str(exc):
+        return str(exc)
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    name = tb.tb_frame.f_code.co_name if tb is not None else "a function above"
+    return f"{name}() is still a stub; fill it in above, then re-run this cell."
+
+
+def _try(label: str, check, needs: tuple = ()):
+    """Run a check, or a table that depends on your code, without derailing the notebook.
+
+    A stub you have not filled in yet simply says so. A wrong answer prints the check's own
+    message — which names the likely mistake — and the notebook carries on, so one broken
+    exercise never hides the feedback on the others. A table given `needs` waits until those
+    exercises have passed, and names the one it is waiting for. Nothing is swallowed: every
+    verdict is recorded in _STATUS, and the last cell turns any failure into a non-zero exit
+    whenever this file runs as a script. Returns what the check returned, or None.
+    """
+    waiting = [n for n in needs if _STATUS.get(n) != "passed"]
+    if waiting:
+        _STATUS.pop(label, None)
+        names = [f"{n} ({_BOARD[n]})" for n in waiting]
+        one = len(names) == 1
+        names = names[0] if one else ", ".join(names[:-1]) + " and " + names[-1]
+        print(f"{label}: skipped — it runs your code from {names}, which "
+              f"{'has' if one else 'have'} not passed yet. Finish {'it' if one else 'them'}, "
+              f"re-run {'its check cell' if one else 'their check cells'}, then this one.")
+        return None
+    try:
+        result = check()
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        print(f"{label}: not started yet — {_unfinished(exc)}")
+        return None
+    except AssertionError as exc:
+        _STATUS[label] = "failed"
+        print(f"{label}: FAILED — {exc}")
+        return None
+    except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
+        print(f"{label}: raised {type(exc).__name__}: {exc}")
+        return None
+    _STATUS[label] = "passed"
+    return result
 
 # %% [markdown]
 # ## 1. The control input is an angle, not a torque
@@ -127,7 +191,7 @@ def _check_gait_targets() -> None:
 # import this file without every check firing: it imports under the name "lesson", while
 # a notebook cell and `python lesson.py` both run as "__main__".
 if __name__ == "__main__":
-    _check_gait_targets()
+    _try("exercise 1", _check_gait_targets)
 
 # %% [markdown]
 # ## 3. Energy is the integral of torque times velocity
@@ -174,6 +238,33 @@ def rollout(model, data, params: dict, horizon: int = HORIZON_STEPS,
             "steps": steps, "fell": fell}
 
 
+def _check_rollout() -> None:
+    model, data = load_walker()
+    r = rollout(model, data, BASELINE_GAIT)
+    assert set(r) == {"distance", "energy", "steps", "fell"}, (
+        f"keys were {sorted(r)} — return a dict with exactly those four names."
+    )
+    assert not r["fell"] and r["steps"] == HORIZON_STEPS, (
+        f"the baseline gait fell={r['fell']} after {r['steps']} steps. It is known to survive "
+        "the full horizon, so the loop is wrong: the usual causes are writing targets into "
+        "data.qpos instead of data.ctrl, or forgetting mj_step."
+    )
+    again = rollout(model, data, BASELINE_GAIT)
+    assert abs(again["distance"] - r["distance"]) < 1e-9, (
+        f"the same gait walked {r['distance']:.3f} m then {again['distance']:.3f} m on the same "
+        "data — reset to the keyframe at the TOP of every rollout."
+    )
+    print(f"exercise 2 looks right: the baseline walks {r['distance']:.3f} m on "
+          f"{r['energy']:.1f} J and survives all {r['steps']} steps")
+
+
+if __name__ == "__main__":
+    _try("exercise 2", _check_rollout)
+
+# %% [markdown]
+# **Exercise 3 — the cost of transport.**
+
+# %%
 def cost_of_transport(energy_j: float, distance_m: float, mass_kg: float = TOTAL_MASS,
                       gravity: float = GRAVITY) -> float:
     """Dimensionless specific cost of transport: energy / (mass * gravity * distance)."""
@@ -190,7 +281,7 @@ def gait_score(result: dict) -> float:
     return cost_of_transport(result["energy"], result["distance"])
 
 
-def _check_rollout_and_cot() -> None:
+def _check_cost_of_transport() -> None:
     assert abs(cost_of_transport(100.0, 2.0, mass_kg=10.0, gravity=9.81) - 0.5096840) < 1e-6, (
         "cost_of_transport(100, 2, mass=10, g=9.81) should be 100/(10*9.81*2) = 0.509684; "
         "omitting gravity gives 5.0."
@@ -202,28 +293,12 @@ def _check_rollout_and_cot() -> None:
         "a negative distance must also give float('inf'); walking backwards is not efficient "
         "transport, and a negative cost of transport would win every search you ever run."
     )
-    model, data = load_walker()
-    r = rollout(model, data, BASELINE_GAIT)
-    assert set(r) == {"distance", "energy", "steps", "fell"}, (
-        f"keys were {sorted(r)} — return a dict with exactly those four names."
-    )
-    assert not r["fell"] and r["steps"] == HORIZON_STEPS, (
-        f"the baseline gait fell={r['fell']} after {r['steps']} steps. It is known to survive "
-        "the full horizon, so the loop is wrong: the usual causes are writing targets into "
-        "data.qpos instead of data.ctrl, or forgetting mj_step."
-    )
-    again = rollout(model, data, BASELINE_GAIT)
-    assert abs(again["distance"] - r["distance"]) < 1e-9, (
-        f"the same gait walked {r['distance']:.3f} m then {again['distance']:.3f} m on the same "
-        "data — reset to the keyframe at the TOP of every rollout."
-    )
-    print(f"exercises 2 and 3 look right: the baseline walks {r['distance']:.3f} m on "
-          f"{r['energy']:.1f} J, cost of transport "
-          f"{cost_of_transport(r['energy'], r['distance']):.4f}")
+    print("exercise 3 looks right: energy over weight times distance, dimensionless, and a "
+          "walker that covers no ground can never win a search")
 
 
 if __name__ == "__main__":
-    _check_rollout_and_cot()
+    _try("exercise 3", _check_cost_of_transport)
 
 # %% [markdown]
 # ## 5. Phase is not a detail
@@ -249,7 +324,7 @@ def _check_phase_matters() -> None:
 
 
 if __name__ == "__main__":
-    _check_phase_matters()
+    _try("phase table", _check_phase_matters, needs=("exercise 1", "exercise 2"))
 
 # %% [markdown]
 # ## 6. Exercise 4 — a search you can afford
@@ -313,7 +388,7 @@ def _check_search() -> float:
         "BEFORE each rollout, not after."
     )
     found = rollout(model, data, best)
-    print(f"  {used} rollouts in {elapsed:.2f} s ({elapsed / used * 1000:.0f} ms each)\n")
+    print(f"  {used} rollouts in {elapsed * 1000:.1f} ms ({elapsed / used * 1000:.2f} ms each)\n")
     print(f"  {'':10s} {'distance':>9s} {'energy':>9s} {'cost of transport':>18s}")
     print(f"  {'baseline':10s} {base['distance']:9.3f} {base['energy']:9.1f} {base_score:18.4f}")
     print(f"  {'found':10s} {found['distance']:9.3f} {found['energy']:9.1f} {score:18.4f}")
@@ -327,7 +402,7 @@ def _check_search() -> float:
 
 
 if __name__ == "__main__":
-    SEARCH_SCORE = _check_search()
+    SEARCH_SCORE = _try("exercise 4", _check_search)
 
 # %% [markdown]
 # ## 7. Against the literature, honestly
@@ -359,7 +434,8 @@ def compare_against_published(measured_cot: float) -> None:
 
 
 if __name__ == "__main__":
-    compare_against_published(SEARCH_SCORE)
+    _try("comparison table", lambda: compare_against_published(SEARCH_SCORE),
+         needs=("exercise 4",))
 
 # %% [markdown]
 # ## 8. Common mistakes
@@ -408,7 +484,8 @@ def _check_objective_matters() -> None:
 
 
 if __name__ == "__main__":
-    _check_objective_matters()
+    _try("objective table", _check_objective_matters,
+         needs=("exercise 1", "exercise 2", "exercise 3"))
 
 # %% [markdown]
 # ## 9. Self-check
@@ -444,15 +521,49 @@ def _check_self_check(answers: dict = None) -> None:
     print("self-check: all four right")
 
 
-if __name__ == "__main__":
+def _self_check_marked() -> None:
+    """Mark SELF_CHECK, but treat a sheet with no letters on it yet as not started."""
+    if all(str(v).strip() == "?" for v in SELF_CHECK.values()):
+        raise NotImplementedError("put your four letters into SELF_CHECK above, then re-run "
+                                  "this cell.")
     _check_self_check()
+
+
+if __name__ == "__main__":
+    _try("self-check", _self_check_marked)
 
 # %% [markdown]
 # ## What you built, and where it goes next
 
+# %% [markdown]
+# ## Your progress
+#
+# One line per exercise, read from the verdicts the check cells above recorded. Change an
+# exercise, re-run its check cell, then re-run this one.
+
 # %%
+_MARKS = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+
+
+def _progress_board() -> list:
+    """Print one line per exercise and the tally; return the labels whose check failed."""
+    for label, what in _BOARD.items():
+        state = _STATUS.get(label, "not started")
+        print(f"  {_MARKS[state]} {label:<11s} {what:<34s} {state}")
+    done = sum(_STATUS.get(label) == "passed" for label in _BOARD)
+    print(f"\n  {done} of {len(_BOARD)} complete")
+    return [label for label, state in _STATUS.items() if state == "failed"]
+
+
 if __name__ == "__main__":
-    print("F15-L05 reference solution complete: every check ran beside its exercise.")
+    _failed = _progress_board()
+    # A stub you have not reached yet is not a failure. A check that ran and came back wrong
+    # is: as a script or under CI it ends the run non-zero, so a green exit code never papers
+    # over it. In a notebook kernel it is a line on the board, not a traceback.
+    if _failed and "ipykernel" in sys.modules:
+        print(f"  still failing: {', '.join(_failed)} — each one's cell above says what to fix")
+    elif _failed:
+        raise SystemExit("checks failed: " + ", ".join(_failed))
 
 # %% [markdown]
 # ## Self-check answers

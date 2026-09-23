@@ -6,11 +6,14 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
+import io
 import random
 import re
 import sys
 import time
-from typing import Iterable, Mapping, NamedTuple, Sequence
+import traceback
+from typing import Callable, Iterable, Mapping, NamedTuple, Sequence
 
 import numpy as np
 
@@ -91,24 +94,67 @@ class FieldScore(NamedTuple):
 
 _FAILED_CHECKS: list[str] = []
 
+# The exercises, in the order you meet them, and the functions each one asks you to write.
+# The progress board at the foot of the notebook is built from this, and a cell that is
+# waiting on an unfinished exercise names it from here.
+_EXERCISES: dict[str, tuple[str, ...]] = {
+    "exercise 1": ("normalise_value",),
+    "exercise 2": ("match_value",),
+    "exercise 3": ("score_field", "macro_f1"),
+    "exercise 4": ("classify_cell", "confusion_by_field_type"),
+    "exercise 5": ("review_queue", "apply_reviews"),
+}
+_STATUS: dict[str, str] = {}   # label -> "passed" | "failed" | "not started", latest run
 
-def _try(label: str, check) -> None:
+
+def _named(labels: list[str]) -> str:
+    """["exercise 1"] -> "exercise 1 (normalise_value)"; several -> "exercises 2, 3 and 5"."""
+    if len(labels) == 1:
+        return f"{labels[0]} ({', '.join(_EXERCISES[labels[0]])})"
+    nums = [label.split()[-1] for label in labels]
+    return "exercises " + ", ".join(nums[:-1]) + " and " + nums[-1]
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple[str, ...] = ()) -> None:
     """Run a check, or a demo that depends on your code, without derailing the notebook.
 
     A stub you have not filled in yet simply says so. A wrong answer prints the check's own
-    message — which names the likely mistake — and the notebook carries on to the next cell,
-    so one broken exercise never hides the feedback on the other five.
+    message — which names the likely mistake — and the notebook carries on, so one broken
+    exercise never hides the feedback on the others. A demo names the exercises it `needs`:
+    until each has passed its check, the demo says which one it is waiting for and skips.
+    Nothing is swallowed: every outcome is recorded in `_STATUS` for the progress board at the
+    foot of the notebook, and every failure in `_FAILED_CHECKS`, which ends a script run
+    non-zero.
     """
+    waiting = [name for name in _EXERCISES   # in the order you meet them
+               if name in needs and _STATUS.get(name) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        print(f"{label}: skipped — needs {_named(waiting)} to pass first.")
+        return
     try:
         check()
-    except NotImplementedError:
-        print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        stub = traceback.extract_tb(exc.__traceback__)[-1].name   # the frame that raised
+        owner = [name for name, funcs in _EXERCISES.items() if stub in funcs and name != label]
+        if owner:
+            print(f"{label}: skipped — needs {_named(owner)} first.")
+        elif label in _EXERCISES:
+            print(f"{label}: not implemented yet — fill in {stub}() above, then re-run "
+                  "this cell.")
+        else:
+            print(f"{label}: skipped — {stub}() is not implemented yet.")
     except AssertionError as exc:
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: FAILED — {exc}")
     except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
 
 
 # %% [markdown]
@@ -491,7 +537,7 @@ def _show_surface_gap() -> None:
     print("model that was already right.")
 
 
-_try("surface gap", _show_surface_gap)
+_try("surface gap", _show_surface_gap, needs=("exercise 1",))
 
 # %% [markdown]
 # ## 4. Exercise 2 — `match_value`
@@ -651,6 +697,11 @@ def _check_score() -> None:
                         "currency", "exact")
     assert empty.precision == 0.0 and empty.f1 == 0.0, \
         "no predictions and no gold: return 0.0, do not divide by zero"
+    per_field = [score_field(RECORDS, f, "normalised").f1 for f in SCHEMA]
+    want, got = sum(per_field) / len(per_field), macro_f1(RECORDS, "normalised")
+    assert abs(got - want) < 1e-9, (
+        f"macro_f1 gave {got:.4f} but the unweighted mean of your own per-field F1 scores is "
+        f"{want:.4f} — average the F1s over every field in SCHEMA; do not pool the counts")
     print("exercise 3 looks right")
 
 
@@ -672,7 +723,7 @@ def _show_mode_table() -> None:
     print("fuzzy moves only the text field, because you confined it to the text field.")
 
 
-_try("mode table", _show_mode_table)
+_try("mode table", _show_mode_table, needs=("exercise 1", "exercise 2", "exercise 3"))
 
 # %% [markdown]
 # ## 6. Exercise 4 — the confusion analysis
@@ -773,7 +824,7 @@ def _show_confusion() -> None:
     print("the field is often absent and the extractor answers anyway.")
 
 
-_try("confusion table", _show_confusion)
+_try("confusion table", _show_confusion, needs=("exercise 1", "exercise 2", "exercise 4"))
 
 # %% [markdown]
 # ## 7. Exercise 5 — the review queue
@@ -952,7 +1003,8 @@ def _show_quality_cost_curve() -> None:
     print("as opposed to what the reviewers are worth.")
 
 
-_try("quality/cost curve", _show_quality_cost_curve)
+_try("quality/cost curve", _show_quality_cost_curve,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5"))
 
 # %% [markdown]
 # ## 9. Common mistakes
@@ -996,7 +1048,7 @@ def _show_what_fuzzy_money_would_cost() -> None:
           f"did so.\nEach one is an invoice that does not reconcile.")
 
 
-_try("fuzzy on money", _show_what_fuzzy_money_would_cost)
+_try("fuzzy on money", _show_what_fuzzy_money_would_cost, needs=("exercise 1",))
 
 # %% [markdown]
 # ## 10. Self-check
@@ -1069,7 +1121,8 @@ def _show_scorecard() -> None:
           f"per document in the placeholder cost model")
 
 
-_try("scorecard", _show_scorecard)
+_try("scorecard", _show_scorecard,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5"))
 
 # %% [markdown]
 # ## What you built, and where it goes next
@@ -1079,21 +1132,6 @@ _try("scorecard", _show_scorecard)
 # names the defect class, and a routing policy that has to beat random before it earns its
 # place. Every later module — table extraction, clause classification, drift monitoring — is
 # scored by this harness rather than by a new one invented for the occasion.
-
-# %%
-if __name__ == "__main__":
-    for _name, _check in (("exercise 1", _check_normalise),
-                          ("exercise 2", _check_match),
-                          ("exercise 3", _check_score),
-                          ("exercise 4", _check_confusion),
-                          ("exercise 5", _check_queue)):
-        _try(_name, _check)
-    print(f"\nlesson wall time so far: {time.perf_counter() - _LESSON_T0:.1f}s")
-    # tools/execute.py runs this file and reads the exit code. Every check and every demo above
-    # went through _try, so a reference implementation that is quietly wrong lands here rather
-    # than in a PASS line.
-    if _FAILED_CHECKS:
-        raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))
 
 # %% [markdown]
 # ## Self-check answers
@@ -1113,3 +1151,46 @@ if __name__ == "__main__":
 # 5. **(a)** — macro F1 is a summary, and two extractors with the same F1 can fail in ways that
 #    cost very different amounts. A miss usually stops a workflow; a confident wrong value
 #    passes straight through it. The confusion table is what separates them.
+
+# %%
+_MARKS = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+
+
+def _progress_board() -> None:
+    """One line per exercise, from the latest run of its check, then the tally."""
+    width = max(len(", ".join(funcs)) for funcs in _EXERCISES.values())
+    print("progress board")
+    for label, funcs in _EXERCISES.items():
+        state = _STATUS.get(label, "not started")
+        print(f"  {_MARKS[state]} {label:<12} {', '.join(funcs):<{width}}  {state}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    print(f"\n{done} of {len(_EXERCISES)} exercises complete")
+    failing = [label for label in _EXERCISES if _STATUS.get(label) == "failed"]
+    if failing:
+        print("failing right now: " + ", ".join(failing) + ". Each one printed what went "
+              "wrong in its own cell above, and every exercise has hints you can open.")
+    elif done < len(_EXERCISES):
+        print("work top to bottom: every exercise has hints you can open above its code.")
+
+
+# Your progress board. Every check is re-run here, quietly, against your code as it stands
+# now — each one already printed its feedback in its own cell above — so the board is
+# current even if you edited an exercise and did not re-run its check.
+if __name__ == "__main__":
+    with contextlib.redirect_stdout(io.StringIO()):
+        for _name, _check in (("exercise 1", _check_normalise),
+                             ("exercise 2", _check_match),
+                             ("exercise 3", _check_score),
+                             ("exercise 4", _check_confusion),
+                             ("exercise 5", _check_queue)):
+            _try(_name, _check)
+    _progress_board()
+    _wall = time.perf_counter() - _LESSON_T0
+    # Whole seconds: two machines disagree at the first decimal, and that is noise, not a result.
+    print("\nlesson wall time so far: " + ("under a second" if _wall < 1 else f"{_wall:.0f}s"))
+    # A stub you have not reached yet is not a failure. A check that ran and came back wrong
+    # is: in a script or under CI it ends this run non-zero, rather than letting a green exit
+    # code paper over it. Inside a notebook kernel the board above has already said so, in a
+    # line rather than a traceback at the foot of the page.
+    if _FAILED_CHECKS and "ipykernel" not in sys.modules:
+        raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))

@@ -6,8 +6,12 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
 import hashlib
+import io
+import sys
 from pathlib import Path
+from typing import Callable
 
 import mujoco
 import numpy as np
@@ -70,6 +74,48 @@ for _j in range(MODEL.njnt):
           f"{_name:<18s} range [{MODEL.jnt_range[_j][0]:+.2f}, {MODEL.jnt_range[_j][1]:+.2f}]")
 print(f"nq - nv = {MODEL.nq - MODEL.nv}  (every joint is a hinge, so dof i IS qpos slot i)")
 
+# Run all is safe before you have written a line: every check, and every demo that needs your
+# code, goes through _try, which reports and carries on. The board at the foot of the notebook
+# shows where you stand.
+_EXERCISES = {"exercise 1": "body_world_position", "exercise 2": "site_world_position",
+              "exercise 3": "analytic_jacobian", "exercise 4": "finite_difference_jacobian",
+              "exercise 5": "ik_damped_least_squares", "self-check": "your four letters"}
+_STATUS: dict = {}      # label -> "passed" | "failed" | "not started", read by the board
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple = ()) -> None:
+    """Run a check, or a demo that depends on your code, without derailing the notebook.
+
+    A stub you have not filled in yet simply says so. A wrong answer prints the check's own
+    message — which names the likely mistake — and the notebook carries on, so one broken
+    exercise never hides the feedback on the others. Anything listed in `needs` must have
+    passed first; until it has, this names it and skips rather than failing on its behalf.
+    Nothing is swallowed: every outcome lands in _STATUS, and the `__main__` block at the foot
+    of this file exits non-zero outside a notebook if any check failed.
+    """
+    waiting = [n for n in needs if _STATUS.get(n) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        named = " and ".join(f"{n} ({_EXERCISES.get(n, n)})" for n in waiting)
+        one = len(waiting) == 1
+        print(f"{label}: skipped until {named} {'passes' if one else 'pass'} — finish "
+              f"{'that' if one else 'those'}, then re-run this cell.")
+        return
+    try:
+        check()
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        print(f"{label}: {exc}" if str(exc) else
+              f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+    except AssertionError as exc:
+        _STATUS[label] = "failed"
+        print(f"{label}: FAILED — {exc}")
+    except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
+        print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
+
 # %% [markdown]
 # ## 1. Forward kinematics is a stage, not a function you call by accident
 
@@ -130,6 +176,10 @@ def _check_body_world_position() -> None:
     print(f"exercise 1 looks right: hand frame origin {got} at home, {moved} at ready")
 
 
+# %%
+_try("exercise 1", _check_body_world_position)
+
+
 # %% [markdown]
 # ## 3. Three points on one rigid body, and why it matters
 
@@ -182,6 +232,10 @@ def _check_site_world_position() -> None:
     )
     print(f"exercise 2 looks right: palm {got} at home, and {gap * 100:.1f} cm from the hand "
           "frame origin in every pose")
+
+
+# %%
+_try("exercise 2", _check_site_world_position, needs=("exercise 1",))
 
 
 # %% [markdown]
@@ -278,6 +332,9 @@ print("verdict:", "one derived quantity was ready and the other was not"
       if np.abs(_J_partial).max() == 0.0 and np.abs(_J_full).max() > 0.0
       else "unexpected — read the two numbers above before trusting the next section")
 
+# %%
+_try("exercise 3", _check_analytic_jacobian)
+
 # %% [markdown]
 # ## 7. Exercise 4 — the one that settles it: finite differences
 
@@ -346,6 +403,10 @@ def _check_finite_difference_jacobian() -> None:
           f"{worst:.2e} at eps={FD_EPS:.0e}, well inside the {JAC_TOL:.0e} tolerance")
 
 
+# %%
+_try("exercise 4", _check_finite_difference_jacobian, needs=("exercise 2", "exercise 3"))
+
+
 # %% [markdown]
 # ## 8. How small should the step be? Measure it
 
@@ -374,6 +435,9 @@ def step_size_sweep(steps=(1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9,
           "(two nearly-equal doubles, subtracted).")
     print("  This is why the tolerance in this lesson is a stated number and not 'about right'.")
     return rows
+
+
+_try("step-size sweep", step_size_sweep, needs=("exercise 3", "exercise 4"))
 
 
 # %% [markdown]
@@ -482,6 +546,10 @@ def _check_ik() -> None:
           f"{far['residual']:.4f} m — honestly reported, not hidden")
 
 
+# %%
+_try("exercise 5", _check_ik, needs=("exercise 2", "exercise 3"))
+
+
 # %% [markdown]
 # ## 11. What the damping is actually for
 
@@ -535,6 +603,9 @@ def damping_sweep(values=(0.001, 0.01, 0.05, 0.2, 0.5, 1.0)):
     print("  Small damping is fast when the pose is healthy and fragile when it is not;")
     print("  large damping is slow and unbothered. That is the whole trade.")
     return rows
+
+
+_try("damping sweep", damping_sweep, needs=("exercise 5",))
 
 
 # %% [markdown]
@@ -592,21 +663,60 @@ def _check_self_check(answers: dict = None) -> None:
     print("self-check: all four right")
 
 
+def _check_self_check_answered() -> None:
+    """The board's view of the self-check: letters left at "?" are not started, not wrong."""
+    if all(str(v).strip() == "?" for v in SELF_CHECK.values()):
+        raise NotImplementedError("not answered yet — put your four letters in SELF_CHECK "
+                                  "above, then re-run this cell.")
+    _check_self_check()
+
+
+_try("self-check", _check_self_check_answered)
+
+
 # %% [markdown]
 # ## What you built, and where it goes next
 
 # %%
+# Your progress board. Every check runs again here, quietly, so the board describes your code
+# as it stands now: an exercise that was waiting on another you have since finished is marked
+# afresh. In a script or under CI a failed check still ends the run non-zero; in a notebook it
+# is a printed line.
+_BOARD = [("exercise 1", _check_body_world_position, ()),
+          ("exercise 2", _check_site_world_position, ("exercise 1",)),
+          ("exercise 3", _check_analytic_jacobian, ()),
+          ("exercise 4", _check_finite_difference_jacobian, ("exercise 2", "exercise 3")),
+          ("exercise 5", _check_ik, ("exercise 2", "exercise 3")),
+          ("self-check", _check_self_check_answered, ())]
+
+
+def _progress_board() -> list:
+    """Re-run every check without its output, print one line per exercise, return failures."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        for label, check, needs in _BOARD:
+            _try(label, check, needs)
+    marks = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+    width = max(len(name) for name in _EXERCISES.values())
+    print("progress board")
+    for label, _, needs in _BOARD:
+        state = _STATUS.get(label, "not started")
+        waiting = [n for n in needs if _STATUS.get(n) != "passed"]
+        note = ("  (waiting on " + " and ".join(waiting) + ")" if state == "not started"
+                and waiting else "  (re-run its cell for the hint)" if state == "failed" else "")
+        print(f"  {marks[state]} {label:<11s} {_EXERCISES[label]:<{width}s} {state}{note}")
+    done = sum(_STATUS.get(label) == "passed" for label, _, _ in _BOARD)
+    print(f"{done} of {len(_BOARD)} complete")
+    return [label for label, state in _STATUS.items() if state == "failed"]
+
+
 if __name__ == "__main__":
-    _check_body_world_position()
-    _check_site_world_position()
-    _check_analytic_jacobian()
-    _check_finite_difference_jacobian()
-    print("\nstep-size sweep:")
-    step_size_sweep()
-    _check_ik()
-    print("\ndamping sweep:")
-    damping_sweep()
-    _check_self_check()
+    _failed = _progress_board()
+    if _failed:
+        _message = "checks failed: " + ", ".join(_failed)
+        if "ipykernel" in sys.modules:
+            print(f"\n{_message} — each one printed its hint in its own cell above.")
+        else:
+            raise SystemExit(_message)
 
 # %% [markdown]
 # ## Self-check answers

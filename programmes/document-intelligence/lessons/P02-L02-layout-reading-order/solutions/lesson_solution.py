@@ -6,11 +6,14 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
+import io
 import random
 import re
 import sys
 import time
-from typing import Iterable, Mapping, NamedTuple, Sequence
+import traceback
+from typing import Callable, Iterable, Mapping, NamedTuple, Sequence
 
 import numpy as np
 
@@ -102,24 +105,68 @@ def block_index(blocks: Sequence[Sequence[int]]) -> dict[int, int]:
 
 _FAILED_CHECKS: list[str] = []
 
+# The exercises, in the order you meet them, and the functions each one asks you to write.
+# The progress board at the foot of the notebook is built from this, and a cell that is
+# waiting on an unfinished exercise names it from here.
+_EXERCISES: dict[str, tuple[str, ...]] = {
+    "exercise 1": ("find_gaps",),
+    "exercise 2": ("xy_cut",),
+    "exercise 3": ("order_within_block",),
+    "exercise 4": ("detect_header_footer",),
+    "exercise 5": ("kendall_tau",),
+    "exercise 6": ("boundary_f1",),
+}
+_STATUS: dict[str, str] = {}   # label -> "passed" | "failed" | "not started", latest run
 
-def _try(label: str, check) -> None:
+
+def _named(labels: list[str]) -> str:
+    """["exercise 1"] -> "exercise 1 (find_gaps)"; several -> "exercises 2, 3 and 5"."""
+    if len(labels) == 1:
+        return f"{labels[0]} ({', '.join(_EXERCISES[labels[0]])})"
+    nums = [label.split()[-1] for label in labels]
+    return "exercises " + ", ".join(nums[:-1]) + " and " + nums[-1]
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple[str, ...] = ()) -> None:
     """Run a check, or a demo that depends on your code, without derailing the notebook.
 
     A stub you have not filled in yet simply says so. A wrong answer prints the check's own
-    message — which names the likely mistake — and the notebook carries on to the next cell,
-    so one broken exercise never hides the feedback on the other five.
+    message — which names the likely mistake — and the notebook carries on, so one broken
+    exercise never hides the feedback on the others. A demo names the exercises it `needs`:
+    until each has passed its check, the demo says which one it is waiting for and skips.
+    Nothing is swallowed: every outcome is recorded in `_STATUS` for the progress board at the
+    foot of the notebook, and every failure in `_FAILED_CHECKS`, which ends a script run
+    non-zero.
     """
+    waiting = [name for name in _EXERCISES   # in the order you meet them
+               if name in needs and _STATUS.get(name) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        print(f"{label}: skipped — needs {_named(waiting)} to pass first.")
+        return
     try:
         check()
-    except NotImplementedError:
-        print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        stub = traceback.extract_tb(exc.__traceback__)[-1].name   # the frame that raised
+        owner = [name for name, funcs in _EXERCISES.items() if stub in funcs and name != label]
+        if owner:
+            print(f"{label}: skipped — needs {_named(owner)} first.")
+        elif label in _EXERCISES:
+            print(f"{label}: not implemented yet — fill in {stub}() above, then re-run "
+                  "this cell.")
+        else:
+            print(f"{label}: skipped — {stub}() is not implemented yet.")
     except AssertionError as exc:
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: FAILED — {exc}")
     except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
 
 
 # %% [markdown]
@@ -572,6 +619,10 @@ def _check_find_gaps() -> None:
     assert find_gaps([a, wide, b], "x", 20.0) == [], (
         "a box spanning the gap closes it — carry a running MAX of the right edge, do not "
         "compare each box only with its immediate predecessor")
+    inner = {"x": 20.0, "w": 10.0, "y": 0.0, "h": 10.0}   # nested inside `wide`
+    assert find_gaps([wide, inner, b], "x", 20.0) == [], (
+        "a short box nested inside a wide one must not reopen the space the wide one covers — "
+        "extend the running maximum, never replace it with the latest box's right edge")
     assert find_gaps([a], "x", 5.0) == [], "one box cannot enclose an interior gap"
     assert find_gaps([], "y", 5.0) == [], "no boxes, no gaps"
     try:
@@ -613,7 +664,7 @@ def _show_gap_profile() -> None:
     print("measures where the window is, on this corpus, with your code.")
 
 
-_try("gap profile", _show_gap_profile)
+_try("gap profile", _show_gap_profile, needs=("exercise 1",))
 
 # %% [markdown]
 # ## 4. Exercise 2 — `xy_cut`
@@ -875,7 +926,7 @@ def _show_furniture_cost() -> None:
     print("document whose real terms are printed on page 2.")
 
 
-_try("furniture cost", _show_furniture_cost)
+_try("furniture cost", _show_furniture_cost, needs=("exercise 4",))
 
 # %% [markdown]
 # ## 7. Exercises 5 and 6 — the two scores
@@ -931,6 +982,29 @@ def kendall_tau(pred_order: Sequence[int], gold_order: Sequence[int]) -> float:
     return (concordant - discordant) / (n * (n - 1) / 2)
 
 
+def _check_kendall_tau() -> None:
+    assert kendall_tau([1, 2, 3], [1, 2, 3]) == 1.0, "identical orderings score +1"
+    assert kendall_tau([3, 2, 1], [1, 2, 3]) == -1.0, "a reversed ordering scores -1"
+    assert abs(kendall_tau([2, 1, 3], [1, 2, 3]) - 1 / 3) < 1e-9, \
+        "one swapped pair out of three: (2 - 1) / 3"
+    assert kendall_tau([7], [7]) == 1.0, "a single item is trivially in the right order"
+    assert kendall_tau([], []) == 1.0, "an empty ordering is perfect, not an error"
+    try:
+        kendall_tau([1, 2], [1, 3])
+        raise AssertionError("different id sets must raise ValueError")
+    except ValueError:
+        pass
+    print("exercise 5 looks right")
+
+
+_try("exercise 5", _check_kendall_tau)
+
+# %% [markdown]
+# Exercise 6 scores the other half: not the order of the tokens but the places where the
+# order crosses from one block into the next, and whether each crossing you proposed is one
+# the gold segmentation also makes.
+
+# %%
 def boundary_f1(pred_blocks: Sequence[Sequence[int]], gold_blocks: Sequence[Sequence[int]],
                 order: Sequence[int]) -> tuple[float, float, float]:
     """Precision, recall and F1 of block boundaries, read along one reference `order`.
@@ -971,18 +1045,7 @@ def boundary_f1(pred_blocks: Sequence[Sequence[int]], gold_blocks: Sequence[Sequ
     return (precision, recall, f1)
 
 
-def _check_scores() -> None:
-    assert kendall_tau([1, 2, 3], [1, 2, 3]) == 1.0, "identical orderings score +1"
-    assert kendall_tau([3, 2, 1], [1, 2, 3]) == -1.0, "a reversed ordering scores -1"
-    assert abs(kendall_tau([2, 1, 3], [1, 2, 3]) - 1 / 3) < 1e-9, \
-        "one swapped pair out of three: (2 - 1) / 3"
-    assert kendall_tau([7], [7]) == 1.0, "a single item is trivially in the right order"
-    assert kendall_tau([], []) == 1.0, "an empty ordering is perfect, not an error"
-    try:
-        kendall_tau([1, 2], [1, 3])
-        raise AssertionError("different id sets must raise ValueError")
-    except ValueError:
-        pass
+def _check_boundary_f1() -> None:
     assert boundary_f1([[1, 2], [3, 4]], [[1, 2], [3, 4]], [1, 2, 3, 4]) == (1.0, 1.0, 1.0), \
         "the same segmentation on both sides scores 1.0 on all three numbers"
     p, r, f = boundary_f1([[1, 2], [3, 4]], [[1], [2, 3], [4]], [1, 2, 3, 4])
@@ -998,10 +1061,10 @@ def _check_scores() -> None:
         "no boundary on either side is a perfect score, not a divide by zero"
     p, r, f = boundary_f1([[1, 2, 3, 4]], [[1, 2], [3, 4]], [1, 2, 3, 4])
     assert (p, r, f) == (0.0, 0.0, 0.0), "proposing nothing when there was a boundary scores 0"
-    print("exercises 5 and 6 look right")
+    print("exercise 6 looks right")
 
 
-_try("exercises 5 and 6", _check_scores)
+_try("exercise 6", _check_boundary_f1)
 
 # %% [markdown]
 # ## 8. The sweep: one threshold, three different opinions about it
@@ -1082,7 +1145,8 @@ def _show_sweep() -> None:
     print(f"{small[3]:.3f}, and it is the only one of the three that objected.")
 
 
-_try("sweep", _show_sweep)
+_try("sweep", _show_sweep,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 5", "exercise 6"))
 
 # %% [markdown]
 # ## 9. What reading order is worth, in the currency the business uses
@@ -1137,7 +1201,7 @@ def _show_downstream() -> None:
           f"'Terms: standard' answering\nfor every document that never stated any.")
 
 
-_try("downstream", _show_downstream)
+_try("downstream", _show_downstream, needs=("exercise 1", "exercise 2", "exercise 3"))
 
 # %% [markdown]
 # ## 10. Common mistakes
@@ -1178,7 +1242,8 @@ def _show_tau_is_blind_to_blocks() -> None:
     print("One score noticed that the page had been cut into confetti; the other could not.")
 
 
-_try("tau is blind to blocks", _show_tau_is_blind_to_blocks)
+_try("tau is blind to blocks", _show_tau_is_blind_to_blocks,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 5", "exercise 6"))
 
 # %% [markdown]
 # ## 11. Self-check
@@ -1240,7 +1305,7 @@ def _show_scorecard() -> None:
           f"XY-cut {macro_f1(mine_rec):.3f} · raster {macro_f1(raster_rec):.3f}")
 
 
-_try("scorecard", _show_scorecard)
+_try("scorecard", _show_scorecard, needs=("exercise 1", "exercise 2", "exercise 3", "exercise 5"))
 
 # %% [markdown]
 # ## What you built, and where it goes next
@@ -1250,21 +1315,6 @@ _try("scorecard", _show_scorecard)
 # F1 of the pipeline downstream, measured with the harness you built in module 1. Module 3
 # puts a learned tagger on top of this token stream; module 4 goes back into the table you
 # were careful not to shred and scores its structure and its content separately.
-
-# %%
-if __name__ == "__main__":
-    for _name, _check in (("exercise 1", _check_find_gaps),
-                          ("exercise 2", _check_xy_cut),
-                          ("exercise 3", _check_order_within_block),
-                          ("exercise 4", _check_detect_header_footer),
-                          ("exercises 5 and 6", _check_scores)):
-        _try(_name, _check)
-    print(f"\nlesson wall time so far: {time.perf_counter() - _LESSON_T0:.1f}s")
-    # tools/execute.py runs this file and reads the exit code. Every check and every demo above
-    # went through _try, so a reference implementation that is quietly wrong lands here rather
-    # than in a PASS line.
-    if _FAILED_CHECKS:
-        raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))
 
 # %% [markdown]
 # ## Self-check answers
@@ -1287,3 +1337,47 @@ if __name__ == "__main__":
 # 5. **(a)** — tau is a diagnostic, not a business case. The gold-order row in section 9 is the
 #    ceiling any reading-order work can reach; the gap between it and the current pipeline is
 #    the entire value of the project, and it is often much smaller than a bad tau suggests.
+
+# %%
+_MARKS = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+
+
+def _progress_board() -> None:
+    """One line per exercise, from the latest run of its check, then the tally."""
+    width = max(len(", ".join(funcs)) for funcs in _EXERCISES.values())
+    print("progress board")
+    for label, funcs in _EXERCISES.items():
+        state = _STATUS.get(label, "not started")
+        print(f"  {_MARKS[state]} {label:<12} {', '.join(funcs):<{width}}  {state}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    print(f"\n{done} of {len(_EXERCISES)} exercises complete")
+    failing = [label for label in _EXERCISES if _STATUS.get(label) == "failed"]
+    if failing:
+        print("failing right now: " + ", ".join(failing) + ". Each one printed what went "
+              "wrong in its own cell above, and every exercise has hints you can open.")
+    elif done < len(_EXERCISES):
+        print("work top to bottom: every exercise has hints you can open above its code.")
+
+
+# Your progress board. Every check is re-run here, quietly, against your code as it stands
+# now — each one already printed its feedback in its own cell above — so the board is
+# current even if you edited an exercise and did not re-run its check.
+if __name__ == "__main__":
+    with contextlib.redirect_stdout(io.StringIO()):
+        for _name, _check in (("exercise 1", _check_find_gaps),
+                             ("exercise 2", _check_xy_cut),
+                             ("exercise 3", _check_order_within_block),
+                             ("exercise 4", _check_detect_header_footer),
+                             ("exercise 5", _check_kendall_tau),
+                             ("exercise 6", _check_boundary_f1)):
+            _try(_name, _check)
+    _progress_board()
+    _wall = time.perf_counter() - _LESSON_T0
+    # Whole seconds: two machines disagree at the first decimal, and that is noise, not a result.
+    print("\nlesson wall time so far: " + ("under a second" if _wall < 1 else f"{_wall:.0f}s"))
+    # A stub you have not reached yet is not a failure. A check that ran and came back wrong
+    # is: in a script or under CI it ends this run non-zero, rather than letting a green exit
+    # code paper over it. Inside a notebook kernel the board above has already said so, in a
+    # line rather than a traceback at the foot of the page.
+    if _FAILED_CHECKS and "ipykernel" not in sys.modules:
+        raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))

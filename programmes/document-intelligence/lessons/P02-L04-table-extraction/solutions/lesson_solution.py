@@ -6,10 +6,13 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
+import io
 import random
 import sys
 import time
-from typing import Iterable, NamedTuple, Sequence
+import traceback
+from typing import Callable, Iterable, NamedTuple, Sequence
 
 import numpy as np
 
@@ -109,24 +112,69 @@ def similarity(a: str, b: str) -> float:
 
 _FAILED_CHECKS: list[str] = []
 
+# The exercises, in the order you meet them, and the functions each one asks you to write.
+# The progress board at the foot of the notebook is built from this, and a cell that is
+# waiting on an unfinished exercise names it from here.
+_EXERCISES: dict[str, tuple[str, ...]] = {
+    "exercise 1": ("ink_runs",),
+    "exercise 2": ("row_bands",),
+    "exercise 3": ("cells_in_band",),
+    "exercise 4": ("merge_continuations",),
+    "exercise 5": ("content_f1",),
+    "exercise 6": ("row_distance",),
+    "exercise 7": ("teds_like",),
+}
+_STATUS: dict[str, str] = {}   # label -> "passed" | "failed" | "not started", latest run
 
-def _try(label: str, check) -> None:
+
+def _named(labels: list[str]) -> str:
+    """["exercise 1"] -> "exercise 1 (ink_runs)"; several -> "exercises 2, 3 and 5"."""
+    if len(labels) == 1:
+        return f"{labels[0]} ({', '.join(_EXERCISES[labels[0]])})"
+    nums = [label.split()[-1] for label in labels]
+    return "exercises " + ", ".join(nums[:-1]) + " and " + nums[-1]
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple[str, ...] = ()) -> None:
     """Run a check, or a demo that depends on your code, without derailing the notebook.
 
     A stub you have not filled in yet simply says so. A wrong answer prints the check's own
-    message — which names the likely mistake — and the notebook carries on to the next cell,
-    so one broken exercise never hides the feedback on the other six.
+    message — which names the likely mistake — and the notebook carries on, so one broken
+    exercise never hides the feedback on the others. A demo names the exercises it `needs`:
+    until each has passed its check, the demo says which one it is waiting for and skips.
+    Nothing is swallowed: every outcome is recorded in `_STATUS` for the progress board at the
+    foot of the notebook, and every failure in `_FAILED_CHECKS`, which ends a script run
+    non-zero.
     """
+    waiting = [name for name in _EXERCISES   # in the order you meet them
+               if name in needs and _STATUS.get(name) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        print(f"{label}: skipped — needs {_named(waiting)} to pass first.")
+        return
     try:
         check()
-    except NotImplementedError:
-        print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        stub = traceback.extract_tb(exc.__traceback__)[-1].name   # the frame that raised
+        owner = [name for name, funcs in _EXERCISES.items() if stub in funcs and name != label]
+        if owner:
+            print(f"{label}: skipped — needs {_named(owner)} first.")
+        elif label in _EXERCISES:
+            print(f"{label}: not implemented yet — fill in {stub}() above, then re-run "
+                  "this cell.")
+        else:
+            print(f"{label}: skipped — {stub}() is not implemented yet.")
     except AssertionError as exc:
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: FAILED — {exc}")
     except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
 
 
 # %% [markdown]
@@ -336,7 +384,7 @@ def _show_spanning_header_trap() -> None:
     print("gaps underneath. Infer columns from the body; use the header to name them afterwards.")
 
 
-_try("spanning header trap", _show_spanning_header_trap)
+_try("spanning header trap", _show_spanning_header_trap, needs=("exercise 1",))
 
 # %% [markdown]
 # ## 3. Exercise 2 — `row_bands`
@@ -622,7 +670,7 @@ def _show_rebuild() -> None:
           f"(gold {CORPUS[0]['gold'][0][-1].colspan})")
 
 
-_try("rebuild", _show_rebuild)
+_try("rebuild", _show_rebuild, needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4"))
 
 # %% [markdown]
 # ## 6. The two thresholds, swept
@@ -673,7 +721,8 @@ def _sweep_thresholds() -> None:
     print("is not a setting; it is a coin toss per row.")
 
 
-_try("threshold sweep", _sweep_thresholds)
+_try("threshold sweep", _sweep_thresholds,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4"))
 
 # %% [markdown]
 # ## 7. Exercise 5 — `content_f1`
@@ -988,7 +1037,9 @@ def _show_variants() -> None:
         print(f"  {name:28s} {c:10.3f} {td:8.3f} {ts:12.3f}")
 
 
-_try("variant scores", _show_variants)
+_try("variant scores", _show_variants,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5",
+            "exercise 6", "exercise 7"))
 
 # %% [markdown]
 # Two rows of that table are the lesson. Print them on their own and read what each score
@@ -996,8 +1047,9 @@ _try("variant scores", _show_variants)
 
 # %%
 def _show_the_two_cases() -> None:
-    if not SCORES:                       # the cell above has not run yet: nothing to read
-        raise NotImplementedError
+    if not SCORES:   # your exercises pass, but the variant-scores cell above has not run
+        print("the two cases: skipped — run the variant-scores cell in section 10 first.")
+        return
     c, td, ts = SCORES["row bands shattered"]
     print("CONTENT PERFECT, STRUCTURE WRONG — every row cut in two, no text changed:")
     print(f"  content F1 {c:.3f}   TEDS {td:.3f}   TEDS-Struct {ts:.3f}")
@@ -1016,7 +1068,9 @@ def _show_the_two_cases() -> None:
     print("  and only the order-sensitive, content-aware score notices.")
 
 
-_try("the two cases", _show_the_two_cases)
+_try("the two cases", _show_the_two_cases,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5",
+            "exercise 6", "exercise 7"))
 
 # %% [markdown]
 # ## 11. Which score does your consumer actually need?
@@ -1040,8 +1094,9 @@ CONSUMERS = {
 
 
 def _show_consumer_rule() -> None:
-    if not SCORES:                       # the section 10 cell has not run yet
-        raise NotImplementedError
+    if not SCORES:   # your exercises pass, but the section 10 cell has not run
+        print("consumer rule: skipped — run the variant-scores cell in section 10 first.")
+        return
     names = ("content F1", "TEDS", "TEDS-Struct")
     print(f"  {'defect':28s} " + " ".join(f"{n:>12s}" for n in names) + "   verdict from the pair")
     caught: dict[str, set[str]] = {n: set() for n in names}
@@ -1087,7 +1142,9 @@ def _show_consumer_rule() -> None:
     print("TEDS-Struct alongside whatever you gate on, because that pair is the work order.")
 
 
-_try("consumer rule", _show_consumer_rule)
+_try("consumer rule", _show_consumer_rule,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5",
+            "exercise 6", "exercise 7"))
 
 # %% [markdown]
 # One limitation of this family of scores, stated plainly because the table above hides it.
@@ -1109,7 +1166,8 @@ def _show_column_index_blindness() -> None:
     print("looks at `col`. Know what your metric cannot see before you quote it to anyone.")
 
 
-_try("column index blindness", _show_column_index_blindness)
+_try("column index blindness", _show_column_index_blindness,
+     needs=("exercise 5", "exercise 6", "exercise 7"))
 
 # %% [markdown]
 # ## 12. Common mistakes
@@ -1150,7 +1208,9 @@ def _show_colspan_blindness() -> None:
     print("database loader reads it for.")
 
 
-_try("colspan blindness", _show_colspan_blindness)
+_try("colspan blindness", _show_colspan_blindness,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5",
+            "exercise 6", "exercise 7"))
 
 # %% [markdown]
 # ## 13. Self-check
@@ -1199,8 +1259,9 @@ _try("colspan blindness", _show_colspan_blindness)
 
 # %%
 def _show_scorecard() -> None:
-    if not SCORES:
-        raise NotImplementedError
+    if not SCORES:   # your exercises pass, but the section 10 cell has not run
+        print("scorecard: skipped — run the variant-scores cell in section 10 first.")
+        return
     built = rebuild_all()
     exact = sum(1 for tab, t in zip(built, CORPUS) if tab == t["gold"])
     cells = sum(len(r) for tab in built for r in tab)
@@ -1223,7 +1284,9 @@ def _show_scorecard() -> None:
               + (f": {', '.join(missed)}" if missed else ""))
 
 
-_try("scorecard", _show_scorecard)
+_try("scorecard", _show_scorecard,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5",
+            "exercise 6", "exercise 7"))
 
 # %% [markdown]
 # ## What you built, and where it goes next
@@ -1233,15 +1296,6 @@ _try("scorecard", _show_scorecard)
 # harness and asks where it should abstain; module 7 asks whether a difference between two of
 # these numbers is real or noise. Both of them are questions about measurement, which is why
 # this programme keeps building instruments before it builds models.
-
-# %%
-if __name__ == "__main__":
-    print(f"\nlesson wall time so far: {time.perf_counter() - _LESSON_T0:.1f}s")
-    # tools/execute.py runs this file and reads the exit code. Every check and every demo above
-    # went through _try, so a reference implementation that is quietly wrong lands here rather
-    # than in a PASS line.
-    if _FAILED_CHECKS:
-        raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))
 
 # %% [markdown]
 # ## Self-check answers
@@ -1267,3 +1321,48 @@ if __name__ == "__main__":
 #    CAUGHT on both. Forced to one score, it is the one that fails for both kinds of defect.
 #    It is still a poor sole gate — the same section measures TEDS returning one identical
 #    number for two unrelated bugs — which is why the section reports the pair alongside it.
+
+# %%
+_MARKS = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+
+
+def _progress_board() -> None:
+    """One line per exercise, from the latest run of its check, then the tally."""
+    width = max(len(", ".join(funcs)) for funcs in _EXERCISES.values())
+    print("progress board")
+    for label, funcs in _EXERCISES.items():
+        state = _STATUS.get(label, "not started")
+        print(f"  {_MARKS[state]} {label:<12} {', '.join(funcs):<{width}}  {state}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    print(f"\n{done} of {len(_EXERCISES)} exercises complete")
+    failing = [label for label in _EXERCISES if _STATUS.get(label) == "failed"]
+    if failing:
+        print("failing right now: " + ", ".join(failing) + ". Each one printed what went "
+              "wrong in its own cell above, and every exercise has hints you can open.")
+    elif done < len(_EXERCISES):
+        print("work top to bottom: every exercise has hints you can open above its code.")
+
+
+# Your progress board. Every check is re-run here, quietly, against your code as it stands
+# now — each one already printed its feedback in its own cell above — so the board is
+# current even if you edited an exercise and did not re-run its check.
+if __name__ == "__main__":
+    with contextlib.redirect_stdout(io.StringIO()):
+        for _name, _check in (("exercise 1", _check_ink_runs),
+                             ("exercise 2", _check_row_bands),
+                             ("exercise 3", _check_cells),
+                             ("exercise 4", _check_merge),
+                             ("exercise 5", _check_content_f1),
+                             ("exercise 6", _check_row_distance),
+                             ("exercise 7", _check_teds)):
+            _try(_name, _check)
+    _progress_board()
+    _wall = time.perf_counter() - _LESSON_T0
+    # Whole seconds: two machines disagree at the first decimal, and that is noise, not a result.
+    print("\nlesson wall time so far: " + ("under a second" if _wall < 1 else f"{_wall:.0f}s"))
+    # A stub you have not reached yet is not a failure. A check that ran and came back wrong
+    # is: in a script or under CI it ends this run non-zero, rather than letting a green exit
+    # code paper over it. Inside a notebook kernel the board above has already said so, in a
+    # line rather than a traceback at the foot of the page.
+    if _FAILED_CHECKS and "ipykernel" not in sys.modules:
+        raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))

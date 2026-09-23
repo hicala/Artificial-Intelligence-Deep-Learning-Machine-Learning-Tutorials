@@ -6,11 +6,14 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
+import io
 import mmap
 import resource
 import subprocess
 import sys
 import time
+import traceback
 import tracemalloc
 from typing import Any, Callable, Mapping, NamedTuple
 
@@ -59,9 +62,19 @@ def touch_mmap(mib: int) -> int:
 
 
 _FAILED_CHECKS: list[str] = []
+_STATUS: dict[str, str] = {}  # label -> "passed" | "failed" | "not started"
+
+# The exercises, in the order you meet them. The progress board at the foot of the
+# notebook is built from this, and a demo that is waiting on one names it from here.
+_EXERCISES = {
+    "exercise 1": "measure()",
+    "exercise 2": "chunk_bounds() and sum_squares_chunked()",
+    "exercise 3": "profile()",
+    "exercise 4": "tier_check()",
+}
 
 
-def _try(label: str, check: Callable[[], None]) -> None:
+def _try(label: str, check: Callable[[], None], needs: tuple[str, ...] = ()) -> None:
     """Run a check, or a demo that depends on your code, without derailing the notebook.
 
     A stub you have not filled in yet simply says so. A wrong answer prints the check's own
@@ -71,17 +84,53 @@ def _try(label: str, check: Callable[[], None]) -> None:
     Nothing is swallowed: every failure is recorded, and the `__main__` block at the foot of
     this file exits non-zero if the list is not empty. That is what stops tools/execute.py
     from ever reporting PASS on a reference implementation that is quietly wrong.
+
+    A demo names the exercises it `needs`. Until each of them has passed its check, the demo
+    says which one it is waiting for and skips, rather than failing half-way through its
+    output. Every outcome is recorded in `_STATUS`, which the progress board at the foot reads.
     """
+    waiting = [name for name in needs if _STATUS.get(name) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        todo = ", ".join(f"{name} ({_EXERCISES[name]})" for name in waiting)
+        print(f"{label}: skipped — this needs {todo} to pass first.")
+        return
     try:
         check()
-    except NotImplementedError:
-        print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        stub = traceback.extract_tb(exc.__traceback__)[-1].name
+        print(f"{label}: not implemented yet — fill in {stub}() above, then re-run this cell.")
     except AssertionError as exc:
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: FAILED — {exc}")
     except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
+
+
+_MARKS = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+
+
+def _progress_board() -> None:
+    """One line per exercise, marked passed, failed or not started, then the tally."""
+    width = max(len(what) for what in _EXERCISES.values())
+    print("progress board")
+    for label, what in _EXERCISES.items():
+        state = _STATUS.get(label, "not started")
+        print(f"  {_MARKS[state]} {label:<11} {what:<{width}}  {state}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    print(f"\n{done} of {len(_EXERCISES)} exercises complete")
+    failing = [label for label, state in _STATUS.items() if state == "failed"]
+    if failing:
+        print("failing right now: " + ", ".join(failing) + ". Each one printed what went wrong "
+              "in its own cell above, and every exercise heading has hints you can open.")
+    elif done < len(_EXERCISES):
+        print("work top to bottom: every exercise heading has hints you can open.")
 
 
 print(f"this process has already peaked at {rss_hwm_mib():.1f} MiB just by starting up")
@@ -238,7 +287,7 @@ def _show_high_water_trap() -> None:
     print("gate runs every lesson in a FRESH process, where the record starts at the floor.")
 
 
-_try("high-water demo", _show_high_water_trap)
+_try("high-water demo", _show_high_water_trap, needs=("exercise 1",))
 
 # %%
 def _show_blind_spot() -> None:
@@ -252,7 +301,7 @@ def _show_blind_spot() -> None:
     print("so tracemalloc cannot report it — and the gate charges you for it regardless.")
 
 
-_try("blind-spot demo", _show_blind_spot)
+_try("blind-spot demo", _show_blind_spot, needs=("exercise 1",))
 
 # %% [markdown]
 # ## 3. The floor you never asked for
@@ -317,14 +366,14 @@ def sum_squares_numpy_whole(n: int) -> int:
 _truth = exact_sum_squares(N_DEMO)
 print(f"int64 holds up to   {np.iinfo(np.int64).max}")
 print(f"the exact answer is {_truth}\n")
-print(f"{'implementation':22s} {'seconds':>8s} {'returns':>21s} {'exact?':>7s}")
+print(f"{'implementation':22s} {'time':>10s} {'returns':>21s} {'exact?':>7s}")
 for _name, _impl in (("list of squares", sum_squares_list),
                      ("generator", sum_squares_generator),
                      ("numpy, whole array", sum_squares_numpy_whole)):
     _t0 = time.perf_counter()
     _got = _impl(N_DEMO)
     _dt = time.perf_counter() - _t0
-    print(f"{_name:22s} {_dt:8.3f} {_got:>21} {str(_got == _truth):>7s}")
+    print(f"{_name:22s} {_dt:8.3f} s {_got:>21} {str(_got == _truth):>7s}")
 
 # %%
 def chunk_bounds(n: int, chunk: int) -> list[tuple[int, int]]:
@@ -409,7 +458,7 @@ def _check_profile() -> None:
 
 # %%
 _try("exercise 2", _check_chunking)
-_try("exercise 3", _check_profile)
+_try("exercise 3", _check_profile, needs=("exercise 1",))
 
 # %%
 def _show_tradeoff() -> None:
@@ -421,9 +470,9 @@ def _show_tradeoff() -> None:
     }
     table = profile(impls, N_DEMO)
     truth = exact_sum_squares(N_DEMO)
-    print(f"{'implementation':22s} {'seconds':>8s} {'py peak MiB':>12s} {'exact?':>7s}")
+    print(f"{'implementation':22s} {'time':>10s} {'py peak':>12s} {'exact?':>7s}")
     for name, m in table.items():
-        print(f"{name:22s} {m.wall_s:8.3f} {m.py_peak_mib:12.1f} {str(m.result == truth):>7s}")
+        print(f"{name:22s} {m.wall_s:8.3f} s {m.py_peak_mib:8.1f} MiB {str(m.result == truth):>7s}")
     fastest = min((m.wall_s, name) for name, m in table.items() if m.result == truth)
     leanest = min((m.py_peak_mib, name) for name, m in table.items() if m.result == truth)
     print(f"\nfastest correct: {fastest[1]} at {fastest[0]:.3f}s")
@@ -434,7 +483,7 @@ def _show_tradeoff() -> None:
           f"exact={whole.result == truth} against exact={chunked.result == truth}")
 
 
-_try("trade-off table", _show_tradeoff)
+_try("trade-off table", _show_tradeoff, needs=("exercise 1", "exercise 2", "exercise 3"))
 
 # %% [markdown]
 # ### The profiler is not free
@@ -453,7 +502,7 @@ def _show_observer_effect() -> None:
     print("its wall-clock number — not this one — is what the budget is written against.")
 
 
-_try("observer effect", _show_observer_effect)
+_try("observer effect", _show_observer_effect, needs=("exercise 1",))
 
 # %% [markdown]
 # ## 5. Exercise 4 — `tier_check()`, the gate itself (solved)
@@ -546,7 +595,7 @@ def _gate_this_lesson() -> None:
     print(f"tier_check says: passed={verdict.passed} reasons={verdict.reasons}")
 
 
-_try("gate on this lesson", _gate_this_lesson)
+_try("gate on this lesson", _gate_this_lesson, needs=("exercise 4",))
 
 # %% [markdown]
 # ## 6. Why the budget does not move
@@ -576,7 +625,8 @@ def _show_why_the_budget_does_not_move() -> None:
     print("a bigger budget would have hidden that difference instead of finding it.")
 
 
-_try("budget versus rewrite", _show_why_the_budget_does_not_move)
+_try("budget versus rewrite", _show_why_the_budget_does_not_move,
+     needs=("exercise 1", "exercise 2", "exercise 4"))
 
 # %%
 def _show_current_versus_peak() -> None:
@@ -633,14 +683,23 @@ _show_current_versus_peak()
 #    (c) is wrong on its own terms: `sum_squares_list` is pure Python and never touches numpy.
 
 # %%
+# Your progress board. Every check is re-run here, quietly, against your code as it stands
+# now — each one already printed its feedback in its own cell above — so the board is
+# current even if you edited an exercise and did not re-run its check.
 if __name__ == "__main__":
-    for _name, _check in (("exercise 1", _check_measure),
-                          ("exercise 2", _check_chunking),
-                          ("exercise 3", _check_profile),
-                          ("exercise 4", _check_tier_check)):
-        _try(_name, _check)
-    # tools/execute.py runs this file and reads the exit code. Every check and every demo above
-    # went through _try, so a reference implementation that is quietly wrong lands here rather
-    # than in a PASS line.
-    if _FAILED_CHECKS:
+    _ALL_CHECKS = (  # (exercise, its check, the exercises that check relies on)
+        ("exercise 1", _check_measure, ()),
+        ("exercise 2", _check_chunking, ()),
+        ("exercise 3", _check_profile, ("exercise 1",)),
+        ("exercise 4", _check_tier_check, ()),
+    )
+    with contextlib.redirect_stdout(io.StringIO()):
+        for _name, _check, _needs in _ALL_CHECKS:
+            _try(_name, _check, needs=_needs)
+    _progress_board()
+    # A stub you have not reached yet is not a failure. A check that ran and came back wrong
+    # is: in a script or under CI it ends the run non-zero, rather than letting a green exit
+    # code paper over it. Inside a notebook kernel the board above has already said so, in a
+    # line rather than a traceback at the foot of the page.
+    if _FAILED_CHECKS and "ipykernel" not in sys.modules:
         raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))

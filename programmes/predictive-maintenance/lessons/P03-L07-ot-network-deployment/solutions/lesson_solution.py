@@ -16,16 +16,17 @@
 # P03-L06 (thresholds from a distribution)
 #
 # By the end you will be able to:
-# 1. Implement a fixed-arena allocator and a fixed-point inference path in C, and run the
-#    whole week's inference without one byte of heap after start-up.
-# 2. Measure the disagreement between the gateway's answer and the notebook's, separating
-#    what the arithmetic costs from what the register map costs.
-# 3. Measure how many alarm decisions change when a threshold is not representable on the
-#    wire, and in which direction they change.
-# 4. Implement a store-and-forward buffer that neither loses nor duplicates a reading across
-#    an outage, and measure how many hours of plant it holds.
-# 5. Explain, from a measured comparison, why a one-way diode forces module 8's drift
-#    detection to be unsupervised, and implement the signal that survives it.
+# 1. Implement a fixed-arena allocator in C that aligns, refuses rather than overruns, and
+#    hands out nothing once start-up is over.
+# 2. Implement a Modbus RTU frame decoder that rejects a damaged frame without
+#    half-filling the caller's struct.
+# 3. Implement the health index twice — in Q16.16 integers in C and in float64 in numpy —
+#    and measure both the disagreement between them and how many alarm decisions change,
+#    and in which direction, because the threshold is not representable on the wire.
+# 4. Implement a store-and-forward buffer that neither loses nor duplicates a reading
+#    across a link outage, and measure how many hours of plant it holds.
+# 5. Explain, from a measured comparison, why a one-way data diode forces drift detection
+#    to be unsupervised, and implement the signal that survives it.
 #
 # Four of the seven exercises are in **`lesson.c`**. This notebook builds it, drives it,
 # measures it and grades it.

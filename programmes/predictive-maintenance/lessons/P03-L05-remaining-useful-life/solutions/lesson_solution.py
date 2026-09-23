@@ -21,15 +21,20 @@
 #
 # By the end you will be able to:
 #
-# 1. Implement a Bayesian fit of an exponential degradation model and explain why the
-#    posterior over its two parameters, not the fitted line, is the thing you predict from.
-# 2. Implement a Monte-Carlo predictive distribution for remaining useful life, and measure
-#    how far its interval narrows between a third of life and the last fifth.
-# 3. Implement three prognostic metrics — RMSE, the asymmetric C-MAPSS score, and the
-#    alpha-lambda accuracy cone — and the warning lead time a maintenance contract requires.
-# 4. Measure which quantile of your own predictive distribution each metric selects, and
-#    explain why two of the four disagree with the other two.
-# 5. Demonstrate, from your own numbers, that RMSE-on-RUL prefers a model that arrives late.
+# 1. Implement log_signal and fit_posterior so an exponential degradation model becomes a
+#    Gaussian posterior over an intercept and a slope, and measure that posterior
+#    tightening as readings arrive.
+# 2. Implement rul_samples and rul_track to turn that posterior into a predictive RUL
+#    distribution re-computed at every checkpoint, and measure how far its interval
+#    narrows between a third of life and the last fifth.
+# 3. Implement rul_rmse, phm_score and cone_breakdown, and explain why two of those three
+#    cannot tell an early error from a late one.
+# 4. Implement warning_lead and measure, in units rather than in hours, how often each
+#    model gives less warning than the maintenance contract requires.
+# 5. Implement best_quantile, measure which quantile of one predictive distribution each
+#    metric selects when all four are run on the same rows, and demonstrate from those
+#    numbers that a later model can score a lower RMSE than a cautious one while being
+#    late an order of magnitude more often.
 #
 # **The data is synthetic and the generator is in this notebook.** Nothing is downloaded and
 # nothing needs a network. `MODULES.md` names NASA's C-MAPSS turbofan sets for this module;
@@ -1516,7 +1521,7 @@ _try("is the interval honest", _check_calibration, needs=_FOR_TRACKS)
 #          the ones that fail unplanned — a mean-square average of errors never sees them
 #    - (c) later quantiles are harder to compute
 #
-# Answers, with the reasoning, are published in the course solution bundle.
+# Answers, with the reasoning, are in this lesson's worked solution in the course repository.
 
 # %%
 # The deliverable. A remaining-useful-life model that ships without its evaluation window,

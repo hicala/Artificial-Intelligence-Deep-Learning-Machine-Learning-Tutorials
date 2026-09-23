@@ -1000,7 +1000,7 @@ _try("self-referential edges", _show_self_referential_edges, needs=("exercise 3"
 #    - (b) ECE is stochastic
 #    - (c) the report renders whatever is in `findings`, so the inputs must have differed
 #
-# Answers are published in the course solution bundle.
+# Answers are in this lesson's worked solution in the course repository.
 
 # %% [markdown]
 # ## What you built, and where it goes next

@@ -2059,7 +2059,7 @@ _try("self-check numbers", _self_check_numbers, needs=_FOR_SIGNATURES + ("exerci
 #          useless for training a detector, sufficient for pricing a decision
 #    - (c) the diode only blocks inbound traffic on even-numbered ports
 #
-# Answers, with the reasoning, are published in the course solution bundle.
+# Answers, with the reasoning, are in this lesson's worked solution in the course repository.
 
 # %% [markdown]
 # One last cell, and it is the deliverable: the note that goes back to the reliability

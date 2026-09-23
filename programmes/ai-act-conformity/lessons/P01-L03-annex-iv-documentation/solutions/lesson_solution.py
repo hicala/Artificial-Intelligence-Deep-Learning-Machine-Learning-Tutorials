@@ -1110,7 +1110,38 @@ _try("the staleness verdict", _emit_staleness,
 #   demands both trains its readers to ignore it.
 # * **Treating a green document as a compliant one.** This generator checks that every
 #   emitted section has a source. It does not check that the source is *true*, and no
-#   generator can. That is what modules 4 to 9 of this programme are for.
+#   generator can. That is what modules 4 to 9 of this programme are for. The next cell
+#   types a placeholder into each gap in the sources and hands the result to your generator.
+
+# %%
+def _placeholder_pack() -> None:
+    """Type "TBC" into every gap — in the SOURCES, not the document — and render again."""
+    filler = "TBC"
+    padded = dict(SOURCES)
+    for name, key, value in (
+            ("dataset_manifest", "labelling_procedure", filler),
+            ("control_design", "human_oversight_measures", filler),
+            ("risk_register", "residual_risks",
+             [{"risk": filler, "accepted_by": filler, "review_due": filler}])):
+        padded[name] = SOURCES[name]._replace(payload={**SOURCES[name].payload, key: value})
+    padded["declaration"] = Artefact("declaration", "typed-by-hand", _at(0),
+                                     {"signed_copy": filler, "signed_on": filler})
+    for label, sources in (("as sourced", SOURCES), ("after the TBCs", padded)):
+        doc = render_document(ANNEX_IV, sources)
+        print(f"{label:15s} complete: {doc['complete']!s:5s} · {len(doc['sections'])} of "
+              f"{len(ANNEX_IV)} sections emitted")
+    hollow = [(s["number"], path, json.dumps(value))
+              for s in render_document(ANNEX_IV, padded)["sections"]
+              for path, value in s["fields"].items() if value != field_value(SOURCES, path)]
+    print(f"\nthe {len(hollow)} fields that turned it green:")
+    for number, path, shown in hollow:
+        print(f"  {number}  {path:40s} {shown if len(shown) <= 36 else shown[:35] + '…'}")
+    print("\nyour generator refuses to invent a TBC; it cannot refuse one typed into a source."
+          "\nWhether a source is true is a question for a reviewer, not for a generator.")
+
+
+_try("the placeholder pack", _placeholder_pack,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5"))
 
 # %% [markdown]
 # ## 12. Self-check
@@ -1153,7 +1184,7 @@ _try("the staleness verdict", _emit_staleness,
 #
 # Mark them in the next cell. The key is not written in this file — only a salted hash of it
 # — so you find out which are wrong without reading the answers off the page. The reasoning
-# for each is published in the course solution bundle.
+# for each is in this lesson's worked solution in the course repository.
 
 # %%
 # Salted hashes of the answers, not the answers. Nothing here tells you which letter is right.
@@ -1227,7 +1258,7 @@ def check_self_check(answers: dict) -> None:
 # **Again, and finally: this is engineering, not legal advice.**
 
 # %% [markdown]
-# ## Self-check answers (solution bundle only)
+# ## Self-check answers (worked solution only)
 #
 # **1 — (b).** A section that renders from an empty source is worse than one that fails,
 # because every downstream check — "are all nine sections present?" — comes back green while

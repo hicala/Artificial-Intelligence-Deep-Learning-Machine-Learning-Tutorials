@@ -1520,7 +1520,7 @@ _try("one-row probe", _show_single_row_probe, needs=("exercise 1",))
 #          decision taken from it is taken against a rule nobody agreed
 #    - (c) there is no problem, because critical is more conservative
 #
-# Answers are published in the course solution bundle.
+# Answers are in this lesson's worked solution in the course repository.
 
 # %%
 def _show_review_reproduces() -> None:

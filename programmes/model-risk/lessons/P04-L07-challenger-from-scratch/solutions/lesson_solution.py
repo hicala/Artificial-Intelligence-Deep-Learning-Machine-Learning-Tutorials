@@ -1887,7 +1887,7 @@ _try("NaN is not equal to itself", _show_nan_trap)
 #    - (b) the frames list the records in different orders
 #    - (c) it cannot fail; the same range means the same period
 #
-# Answers are published in the course solution bundle.
+# Answers are in this lesson's worked solution in the course repository.
 
 # %% [markdown]
 # ---

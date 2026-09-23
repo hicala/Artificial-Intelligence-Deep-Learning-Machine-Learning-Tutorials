@@ -1380,7 +1380,7 @@ _try("null detector", _show_the_null_detector,
 #    - (b) retrain the model on the second plant's data before doing anything
 #    - (c) re-run the cost sweep with the new prices and expect a lower threshold
 #
-# Answers, with the reasoning, are published in the course solution bundle.
+# Answers, with the reasoning, are in this lesson's worked solution in the course repository.
 
 # %% [markdown]
 # One last cell, and it is the deliverable. A threshold on its own is a number somebody will

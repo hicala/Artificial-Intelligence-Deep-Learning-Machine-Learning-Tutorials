@@ -2046,7 +2046,7 @@ _try("insertion order", _show_false_alarm, needs=("exercise 8", "exercise 9"))
 #    - (b) nothing, provided the report also rounds to four decimals
 #    - (c) it should round to six decimals instead
 #
-# Answers are published in the course solution bundle.
+# Answers are in this lesson's worked solution in the course repository.
 
 # %%
 print(f"\nlesson wall time: {time.perf_counter() - _LESSON_T0:.1f}s")

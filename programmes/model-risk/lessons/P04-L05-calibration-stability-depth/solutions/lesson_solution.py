@@ -1969,7 +1969,7 @@ _try("frozen baseline", _show_frozen_null, needs=("exercise 6", "exercise 7", "e
 #          moved; the shift is still a finding about the population the model now serves
 #    - (c) CSI is unreliable on a yes/no input, so the score PSI is the one to believe
 #
-# Answers are published in the course solution bundle.
+# Answers are in this lesson's worked solution in the course repository.
 
 # %%
 print(f"\nlesson wall time: {time.perf_counter() - _LESSON_T0:.1f}s")

@@ -1345,12 +1345,17 @@ _try("improvement table", _show_improvement,
 # different bug from one that is randomly wrong.
 
 # %%
+GREEDY_RECORDS: list[dict] | None = None   # kept for the span-length cell further down
+DISPUTED_FIELD: str | None = None
+
+
 def _mean_span_len(records: Sequence[dict], field: str, key: str = "pred") -> float:
     lengths = [len(r[key][field].split()) for r in records if r[key][field]]
     return sum(lengths) / len(lengths) if lengths else 0.0
 
 
 def _show_greedy_vs_viterbi() -> None:
+    global GREEDY_RECORDS, DISPUTED_FIELD
     if TAGGER is None or TAGGER_RECORDS is None:   # the training cell has not run
         print("greedy vs viterbi: skipped — no trained tagger yet. Run the training cell in "
               "section 11 first.")
@@ -1372,6 +1377,7 @@ def _show_greedy_vs_viterbi() -> None:
     print(f"{'macro F1':22s}{gm:9.3f}{vm:9.3f}{vm - gm:+9.3f}")
 
     split = max(gaps, key=lambda f: abs(gaps[f]))
+    GREEDY_RECORDS, DISPUTED_FIELD = greedy_records, split
     train_mean = (sum(len(d["gold"][split].split()) for d in TRAIN_DOCS if d["gold"][split])
                   / max(sum(1 for d in TRAIN_DOCS if d["gold"][split]), 1))
     print(f"\nthe two decoders disagree most on {split}. mean span length, in tokens:")
@@ -1400,6 +1406,49 @@ _try("greedy vs viterbi", _show_greedy_vs_viterbi,
 # contribution, and the harness you built in module 1 is what measures it. Everything above
 # reports Viterbi, because that is the decoder the model was trained with and the one whose
 # failure you can now explain in one sentence.
+#
+# Check that sentence before you lean on it. The cell below prints the averaged transition
+# scores for continuing a span of that field and for closing it, then sorts the held-out
+# documents by the gold length of the span and counts, decoder by decoder, the spans that came
+# out short and the spans that came out long. An error that comes from a prior has a direction;
+# one that comes from noise does not.
+
+# %%
+def _show_span_lengths() -> None:
+    """The disputed field's span-length errors, split by gold length and by decoder."""
+    if GREEDY_RECORDS is None or DISPUTED_FIELD is None:   # the cell above has not run
+        print("span lengths: skipped — run the greedy-versus-Viterbi cell above first.")
+        return
+    f = DISPUTED_FIELD
+    i_tag, o_tag = TAG_INDEX[f"I-{f}"], TAG_INDEX["O"]
+    print(f"averaged transitions for {f}:  continue I->I {TAGGER.t[i_tag, i_tag]:+.2f}   "
+          f"close I->O {TAGGER.t[i_tag, o_tag]:+.2f}")
+    train: dict[int, int] = {}
+    for d in TRAIN_DOCS:
+        if d["gold"][f]:
+            n = len(d["gold"][f].split())
+            train[n] = train.get(n, 0) + 1
+    print("gold span lengths, training split: "
+          + ", ".join(f"{n} tokens in {c} docs" for n, c in sorted(train.items())))
+
+    greedy = {r["doc_id"]: r["pred"][f] for r in GREEDY_RECORDS}
+    rows: dict[int, list[int]] = {}   # gold length -> docs, greedy short/long, viterbi short/long
+    for rec in TAGGER_RECORDS:
+        n = len(rec["gold"][f].split())
+        if not n:
+            continue
+        g, v = len(greedy[rec["doc_id"]].split()), len(rec["pred"][f].split())
+        counts = (1, g < n, g > n, v < n, v > n)
+        rows[n] = [a + b for a, b in zip(rows.get(n, [0] * 5), counts)]
+    print("\nheld-out documents, by gold span length:")
+    print(f"{'gold length':>13s}{'docs':>7s}{'greedy short':>15s}{'greedy long':>14s}"
+          f"{'viterbi short':>16s}{'viterbi long':>15s}")
+    for n, (docs, gs, gl, vs, vl) in sorted(rows.items()):
+        print(f"{n:13d}{docs:7d}{gs:15d}{gl:14d}{vs:16d}{vl:15d}")
+
+
+_try("span lengths", _show_span_lengths,
+     needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5", "exercise 6"))
 
 # %% [markdown]
 # ## 15. Self-check — ANSWERS
@@ -1438,12 +1487,9 @@ _try("greedy vs viterbi", _show_greedy_vs_viterbi,
 #    — which is a data finding, and module 8 is where you learn to monitor for it.
 #
 
-# %% [markdown]
-# One last cell: the scorecard. Every line computed, which is the shape of the summary a model
-# risk reviewer will ask you for when you propose replacing a rule list with a model.
-
 # %%
 def _show_scorecard() -> None:
+    """One last cell: the scorecard, every line of it computed from the cells above."""
     if TAGGER_RECORDS is None or IMPROVEMENT is None:   # a cell it reads has not run
         print("scorecard: skipped — run the training cell in section 11 and the "
               "improvement-table cell in section 13 first.")
@@ -1468,6 +1514,10 @@ def _show_scorecard() -> None:
 _try("scorecard", _show_scorecard,
      needs=("exercise 1", "exercise 2", "exercise 3", "exercise 4", "exercise 5", "exercise 6",
             "exercise 7"))
+
+# %% [markdown]
+# That is the scorecard. Every line is computed, which is the shape of the summary a model risk
+# reviewer will ask you for when you propose replacing a rule list with a model.
 
 # %% [markdown]
 # ## What you built, and where it goes next

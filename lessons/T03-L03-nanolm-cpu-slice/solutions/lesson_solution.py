@@ -1094,9 +1094,37 @@ def _demo_wrong_jacobian() -> None:
 # %% [markdown]
 # ## 16. Self-check answers
 #
-# See the comment block at the foot of this file.
+# See the comment block at the foot of this file. Question 4 is also measured, below.
 
 # %%
+# Question 4, measured rather than taken on trust — commit to an answer before you run this.
+# Random queries each score CONTEXT random keys at a growing width D, once raw and once scaled
+# by 1/sqrt(D). "Jacobian size" is how far the attention weights move when the scores are
+# nudged: the gradient the softmax can still pass back to Wq and Wk.
+def _demo_why_scale() -> None:
+    """Raw versus 1/sqrt(D)-scaled scores: their spread, how peaked the softmax gets, and
+    how much gradient it lets through."""
+    rng = np.random.default_rng(4)
+    print(f"{'':5s} {'score spread':>17s} {'largest weight':>17s} {'Jacobian size':>17s}")
+    print(f"{'D':>5s}" + f" {'raw':>8s} {'scaled':>8s}" * 3)
+    for d in (4, 16, D_MODEL, 256, 1024):
+        q, k = rng.normal(0, 1, (CONTEXT, d)), rng.normal(0, 1, (CONTEXT, d))
+        spread, top, size = [], [], []
+        for scores in (q @ k.T, q @ k.T / np.sqrt(d)):
+            a = softmax(scores)
+            jacobian = a[:, :, None] * np.eye(CONTEXT) - a[:, :, None] * a[:, None, :]
+            spread.append(scores.std())
+            top.append(a.max(axis=-1).mean())
+            size.append(np.linalg.norm(jacobian, axis=(1, 2)).mean())
+        print(f"{d:5d}" + "".join(f" {raw:8.3f} {scaled:8.3f}"
+                                  for raw, scaled in (spread, top, size)))
+        if d == D_MODEL:
+            lost = 1 - size[0] / size[1]
+    print(f"\nraw, the spread grows like sqrt(D), each row piles onto one key and the gradient "
+          f"shrinks;\nscaled, all three hold still. At this lesson's own width, D = {D_MODEL}, "
+          f"leaving the scale\nout already costs {lost:.0%} of the gradient through the softmax.")
+
+
 def _show_heldout() -> None:
     print(f"  held-out after training  {evaluate(trained, VAL_DATA, seed=7):.4f} nats/char")
 
@@ -1170,6 +1198,9 @@ if __name__ == "__main__":
     _try("the `A * dA` demonstration", _demo_wrong_jacobian,
          needs=("exercise 1", "exercise 3", "exercise 5"))
 
+    print("\n--- section 16: question 4, measured ---")
+    _try("the `1/sqrt(D)` measurement", _demo_why_scale, needs=("exercise 1",))
+
     print("\n--- what you built, measured ---")
     print(f"  parameters               {sum(v.size for v in init_params().values())}")
     print(f"  uniform baseline         {UNIFORM_BASELINE:.4f} nats/char")
@@ -1227,7 +1258,8 @@ if __name__ == "__main__":
 # give, quoted in `claims.yaml`. (a) is wrong because softmax normalises whatever scale it is
 # handed; the rows sum to 1 either way. (c) confuses the scaling with the sequence length,
 # which never enters. (d) is the belief this question exists to kill: it is not cosmetic, and
-# removing it at width 48 is already measurable.
+# removing it at this lesson's own width is already measurable — `_demo_why_scale` prints by
+# how much.
 #
 # **5 — (b) `make_batch` returned targets equal to the inputs.** If the target at position `t`
 # is the character *at* `t` rather than at `t+1`, the model is being asked to reproduce

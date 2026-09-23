@@ -1445,7 +1445,7 @@ _try("two orderings", _show_two_orderings, needs=_FOR_VALUES + ("exercise 8",))
 #          then a modelling artefact rather than a fleet-wide fault
 #    - (c) automatically widen its confidence interval
 #
-# Answers, with the reasoning, are published in the course solution bundle.
+# Answers, with the reasoning, are in this lesson's worked solution in the course repository.
 
 # %% [markdown]
 # Before the summary, one measurement about the notebook itself. This lesson is declared

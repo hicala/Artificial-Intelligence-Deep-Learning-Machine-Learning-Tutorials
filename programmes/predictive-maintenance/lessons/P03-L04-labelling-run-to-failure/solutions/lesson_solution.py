@@ -19,14 +19,18 @@
 #
 # By the end you will be able to:
 #
-# 1. Parse a work-order export whose dates arrive in three formats and whose close dates are
-#    weeks after the work, and derive an event hour under a stated policy.
-# 2. Classify a work order as a failure, a suspension or neither, and explain why a suspension
-#    is censored data rather than a negative example.
-# 3. Implement horizon labelling that emits *unknown* rather than *negative* where censoring
-#    makes the label unknowable, and that never emits a row from after the run ended.
-# 4. Split a run-to-failure table by unit and stratified on the event, and measure how many
+# 1. Implement `parse_log_hour`, `classify_work_order` and `event_hour`, so a work-order export
+#    whose dates arrive in three formats and whose close dates are weeks after the work yields
+#    failures and suspensions, each dated under a stated policy, and never counts a
+#    no-fault-found call-out as a failure.
+# 2. Implement `build_runs` and `horizon_labels`, so a unit the log never mentions is
+#    right-censored at the edge of the window rather than dropped, a suspended or censored
+#    unit's final horizon emits *unknown* rather than *negative*, and no row survives the hour
+#    its run ended.
+# 3. Split a run-to-failure table by unit and stratified on the event, and measure how many
 #    units a row-level split would have leaked across the boundary.
+# 4. Implement a tie-aware `rank_auc` and a two-detector `leakage_report`, and explain from your
+#    own table why a score ceiling alone misses the quiet leak.
 # 5. Measure, from your own numbers, how far the cost-optimal threshold moves when nothing
 #    changes but the labelling policy — and how badly a threshold chosen under a leaky policy
 #    performs when it is scored honestly.
@@ -1715,7 +1719,7 @@ _try("the censoring bug, priced", _price_the_censoring_bug,
 #    - (b) the labelling policy: which orders ended a run, when, and which units were censored
 #    - (c) the number of thresholds in the sweep
 #
-# Answers, with the reasoning, are published in the course solution bundle.
+# Answers, with the reasoning, are in this lesson's worked solution in the course repository.
 
 # %%
 # The deliverable. A labelled dataset with no policy attached is a pile of numbers somebody

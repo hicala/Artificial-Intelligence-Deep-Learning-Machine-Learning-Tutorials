@@ -27,16 +27,22 @@
 #
 # By the end you will be able to:
 #
-# 1. Implement a causal health index for one asset class and **measure** its leakage rather
-#    than asserting it is causal.
-# 2. Implement a labelling policy over a work-order log and report what it censors, in units
-#    and in unit-hours nobody observed.
-# 3. Implement the operating-point choice and name, unit by unit, the failures that choice
-#    gives up and why each one is given up.
-# 4. Implement the deployment and re-derivation checks that decide whether the number can be
-#    shipped and when it stops being valid.
-# 5. Implement the submission checklist itself, and explain why a threshold reported without
-#    its price or without its named give-ups fails that checklist however good the detector is.
+# 1. Implement causal_health and causality_margin so that the claim 'this feature is
+#    causal' is a number the notebook prints, and measure what a whole-window fit does to
+#    readings that were already recorded.
+# 2. Implement label_runs and censoring_report so a suspension is censored rather than
+#    counted as a survivor, and report what the policy censors in units and in unobserved
+#    unit-hours.
+# 3. Implement price_the_outcomes, choose_operating_point and failures_given_up so the
+#    threshold is derived in currency from audited prices, with a price the audit could
+#    not support carried as a labelled guess, and measure, for every failure that
+#    threshold does not catch, the reason and the price of catching it anyway.
+# 4. Implement deployment_report and rederivation_trigger so the smoothing window is
+#    decided by the gateway's arena and the re-derivation rule is two measured numbers
+#    rather than a sentence.
+# 5. Implement check_specification and my_specification, and explain why a submission
+#    that reports a threshold without its prices, or without naming the failures it
+#    gives up, must fail however good its detector is.
 #
 
 # %%
@@ -3253,7 +3259,7 @@ _try("self-check numbers", _self_check_numbers,
 #          the scan and not about the price
 #    - (c) the function failed and should have raised
 #
-# Answers, with the reasoning, are published in the course solution bundle.
+# Answers, with the reasoning, are in this lesson's worked solution in the course repository.
 
 # %% [markdown]
 # ## What you built

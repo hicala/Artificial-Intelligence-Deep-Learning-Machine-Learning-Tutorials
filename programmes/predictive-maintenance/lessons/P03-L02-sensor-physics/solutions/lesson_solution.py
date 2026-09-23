@@ -1851,7 +1851,7 @@ _try("the modulus trap", _the_modulus_trap, needs=("exercise 3",))
 #    - (c) a health index defined as today's RMS divided by that machine's own baseline RMS,
 #          where the baseline was recorded after the drift
 #
-# Answers, with the reasoning, are published in the course solution bundle.
+# Answers, with the reasoning, are in this lesson's worked solution in the course repository.
 
 # %% [markdown]
 # One last cell, and it is the deliverable. Run the whole chain end to end — anti-alias

@@ -16,7 +16,7 @@ Two mechanisms, both line-based:
   * `COMMONS_ONLY_STUDENT` / `COMMONS_ONLY_SOLUTION` / `COMMONS_ONLY_END` blocks keep one branch
     and drop the other, plus the three marker lines. This is how the title, the build paths
     and the self-check answers differ between the two files.
-  * an `COMMONS_STUB_END` marker inside a function body means: in the STUDENT file, replace
+  * a `COMMONS_STUB_END` marker inside a function body means: in the STUDENT file, replace
     everything from that marker to the end of the function with the stub in stubs.py. The
     marker line itself never ships.
 

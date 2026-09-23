@@ -1251,7 +1251,7 @@ _try("colspan blindness", _show_colspan_blindness,
 #          and a text defect
 #    - (c) TEDS-Struct, because the ledger only needs the columns
 #
-# Answers are published in the course solution bundle.
+# Answers are in this lesson's worked solution in the course repository.
 
 # %% [markdown]
 # One last cell: the scorecard. Every line computed, which is the shape of the summary a model

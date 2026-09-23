@@ -1248,7 +1248,7 @@ _try("exposure-only tiering", _show_exposure_only_tiering, needs=("exercise 3",)
 #          not measured", and the first is a claim somebody will want to check
 #    - (c) it breaks the sort order of the table
 #
-# Answers are published in the course solution bundle.
+# Answers are in this lesson's worked solution in the course repository.
 
 # %% [markdown]
 # ## What you built, and where it goes next

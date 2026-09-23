@@ -1031,7 +1031,7 @@ if __name__ == "__main__":
 #    - (c) the scanner becomes linear in the number of records
 #    - (d) the guarantee is unaffected because the buffer is on the stack
 #
-# Answers, with reasoning, are published in the course solution bundle.
+# Answers, with reasoning, are in this lesson's worked solution in the course repository.
 
 # %% [markdown]
 # ## Self-check answers

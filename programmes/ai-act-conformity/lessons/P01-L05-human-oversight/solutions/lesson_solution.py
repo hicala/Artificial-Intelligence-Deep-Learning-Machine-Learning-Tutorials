@@ -24,10 +24,11 @@
 #    explain which decisions have to be excluded from the denominator and why.
 # 3. Implement a time-to-decision distribution that tells a clock anomaly apart from a
 #    reviewer who is too fast.
-# 4. Implement the Article 14(5) four-eyes check as a count of **distinct natural persons**.
-# 5. Implement an automation-bias curve and separate a reviewer whose override rate collapses
+# 4. Implement an automation-bias curve and separate a reviewer whose override rate collapses
 #    to nothing from one whose rate merely declines, using each reviewer's own detectable floor.
-# 6. Implement `oversight_gate()` and report the decisions it would have blocked.
+# 5. Implement the Article 14(5) four-eyes check as a count of **distinct natural persons**, then
+#    `oversight_gate()`, the control that enforces it, and report every decision it would have
+#    blocked with each reason it failed on.
 #
 # > **This is engineering, not legal advice.** The article numbers, the quoted wording and the
 # > dates are sourced in `claims.yaml` with their URLs and access dates. The thresholds below —

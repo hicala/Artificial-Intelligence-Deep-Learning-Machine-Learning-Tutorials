@@ -1211,8 +1211,7 @@ _try("the diff", _show_diff,
 #   perfect paperwork is still high-risk. Put the override where the article puts it.
 # - **Treating `annex_iii_derogated` as `minimal`.** Claiming the derogation creates duties:
 #   document the assessment before placing, and register under Article 49(2).
-# - **Accepting a justification of whitespace.** `if system.get("justification")` is True for
-#   `"   "`. Strip it.
+# - **Accepting whitespace as a justification.** `"   "` is truthy, so strip it before testing.
 # - **Documenting on the day of placing.** Article 6(4) says *before*. The comparison is
 #   strict, and a non-strict one silently passes the most common real failure.
 # - **Reading the Article 50 duties off the tier.** They are properties of the system. A
@@ -1289,7 +1288,7 @@ _try("self-check aids", _self_check_aids,
 #
 # Mark them in the next cell. The key is not written in this file — only a salted hash of it —
 # so you find out which are wrong without reading the answers off the page. The reasoning for
-# each is published in the course solution bundle.
+# each is in this lesson's worked solution in the course repository.
 
 # %%
 # Salted hashes of the answers, not the answers. Nothing here tells you which letter is right.
@@ -1353,7 +1352,7 @@ def check_self_check(answers: dict) -> None:
 # **Again, and finally: this is engineering, not legal advice.**
 
 # %% [markdown]
-# ## Self-check answers (solution bundle only — this section is not in the student file)
+# ## Self-check answers (worked solution only — this section is not in the student file)
 #
 # 1. **(b)** The final subparagraph of Article 6(3) is unconditional: an Annex III system
 #    "shall always be considered to be high-risk where the AI system performs profiling of

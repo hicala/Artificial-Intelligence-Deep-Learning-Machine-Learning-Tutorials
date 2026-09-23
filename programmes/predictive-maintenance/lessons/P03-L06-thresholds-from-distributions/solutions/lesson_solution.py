@@ -1510,7 +1510,7 @@ _try("rules of thumb, priced", _price_the_rules_of_thumb, needs=_FOR_PLAN)
 #    - (c) the intervention hour AND what the second-best slot would cost, because the sort
 #          is only useful when it knows what giving way is worth
 #
-# Answers, with the reasoning, are published in the course solution bundle.
+# Answers, with the reasoning, are in this lesson's worked solution in the course repository.
 
 # %%
 # The deliverable. A plan with no prices attached is a date somebody will move, and a date

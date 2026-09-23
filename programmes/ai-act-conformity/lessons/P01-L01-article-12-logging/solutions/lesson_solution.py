@@ -1100,7 +1100,7 @@ _try("clock-skew demo", _show_clock_skew, needs=("exercise 4",))
 #
 # Mark them in the next cell. The key is not written in this file — only a salted hash of it —
 # so you find out which are wrong without reading the answers off the page. The reasoning for
-# each is published in the course solution bundle.
+# each is in this lesson's worked solution in the course repository.
 
 # %%
 # Salted hashes of the answers, not the answers. Nothing here tells you which letter is right.
@@ -1165,7 +1165,7 @@ def check_self_check(answers: dict) -> None:
 # **Again, and finally: this is engineering, not legal advice.**
 
 # %% [markdown]
-# ## Self-check answers (solution bundle only — this section is not in the student file)
+# ## Self-check answers (worked solution only — this section is not in the student file)
 #
 # 1. **(b)** Internal consistency is exactly what a full rewrite of the tail also produces:
 #    the forger edits one entry and re-hashes every entry after it, and all three of

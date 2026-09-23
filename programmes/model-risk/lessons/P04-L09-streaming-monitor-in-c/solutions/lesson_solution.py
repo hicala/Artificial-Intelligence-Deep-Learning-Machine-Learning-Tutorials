@@ -1582,7 +1582,7 @@ SELF_CHECK = {1: "c", 2: "b", 3: "d", 4: "a"}   # <- put a, b, c or d in each
 
 # The marker holds a salted digest of each answer, not the answer. It still tells you at once
 # which questions are wrong and which section settles each one, but reading this cell does not
-# hand you the four letters. The worked reasoning is in the course solution bundle.
+# hand you the four letters. The reasoning is in this lesson's worked solution in the course repository.
 _MARK = {
     1: ("249178727a10edf4dd2a69e4fff371bfb45935d21e83fe0259ca6274994363cf", "section 12"),
     2: ("e43f869d4ed49ce8ca7e48df579584efb01f9f7af02b6e841c48d5a032a3ca68", "section 10"),

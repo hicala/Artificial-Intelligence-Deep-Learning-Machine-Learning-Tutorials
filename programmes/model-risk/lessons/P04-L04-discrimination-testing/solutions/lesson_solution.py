@@ -1339,7 +1339,7 @@ _try("broken pairing", _show_broken_pairing, needs=("exercise 1",))
 #    - (b) they estimate the same variance by different routes, and agreement is the check
 #    - (c) the bootstrap needed more replicates
 #
-# Answers are published in the course solution bundle.
+# Answers are in this lesson's worked solution in the course repository.
 
 # %% [markdown]
 # ## What you built, and where it goes next

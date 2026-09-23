@@ -1429,7 +1429,7 @@ _try("record without power", _show_without_power,
 #
 # Mark them in the next cell. The key is not written in this file — only a salted hash of it —
 # so you find out which are wrong without reading the answers off the page. The reasoning for
-# each is published in the course solution bundle.
+# each is in this lesson's worked solution in the course repository.
 
 # %%
 # Salted hashes of the answers, not the answers. Nothing here tells you which letter is right.

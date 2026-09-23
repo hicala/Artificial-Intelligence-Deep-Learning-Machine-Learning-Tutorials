@@ -1107,7 +1107,7 @@ _try("fuzzy on money", _show_what_fuzzy_money_would_cost, needs=("exercise 1",))
 #    - (b) the inference latency
 #    - (c) nothing; 0.91 beats 0.86
 #
-# Answers are published in the course solution bundle.
+# Answers are in this lesson's worked solution in the course repository.
 
 # %% [markdown]
 # One last cell: the scorecard. Five lines, every one of them computed, which is the shape of

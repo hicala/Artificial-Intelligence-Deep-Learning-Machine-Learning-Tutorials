@@ -1280,7 +1280,7 @@ _try("tau is blind to blocks", _show_tau_is_blind_to_blocks,
 #    - (b) tau on its own
 #    - (c) the number of blocks per page
 #
-# Answers are published in the course solution bundle.
+# Answers are in this lesson's worked solution in the course repository.
 
 # %% [markdown]
 # One last cell: the scorecard, five computed lines, the shape a reviewer asks for.

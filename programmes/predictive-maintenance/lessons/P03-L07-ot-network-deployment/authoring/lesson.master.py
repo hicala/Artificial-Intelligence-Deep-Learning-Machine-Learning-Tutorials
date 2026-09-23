@@ -1,14 +1,14 @@
 # %% [markdown]
-# ATLAS_ONLY_STUDENT
+# COMMONS_ONLY_STUDENT
 # # P03-L07 · Deployment on an OT network
-# ATLAS_ONLY_SOLUTION
+# COMMONS_ONLY_SOLUTION
 # # P03-L07 · Deployment on an OT network — REFERENCE SOLUTION
 #
 # This is `lesson.py` with the three Python stubs filled in, driving the reference C build
 # rather than the student one. The two files differ only in those three function bodies, in
 # the build paths set in the setup cell, in `SELF_CHECK`, and in the answer key at the foot
 # of this file.
-# ATLAS_ONLY_END
+# COMMONS_ONLY_END
 #
 # **You will build:** the same inference path twice — once in C, in integers, inside a
 # 40 KiB arena with no heap allocation after start-up, and once in numpy in float64 — plus
@@ -56,7 +56,7 @@ print("numpy", np.__version__, "· python", sys.version.split()[0])
 # itself, while importing the lesson never runs anything.
 _IS_MAIN = __name__ == "__main__"
 
-# ATLAS_ONLY_STUDENT
+# COMMONS_ONLY_STUDENT
 try:
     LESSON_DIR = Path(__file__).resolve().parent
 except NameError:  # a notebook has no __file__
@@ -64,7 +64,7 @@ except NameError:  # a notebook has no __file__
 
 C_SRC = "lesson.c"
 BIN = "lesson_bin"
-# ATLAS_ONLY_SOLUTION
+# COMMONS_ONLY_SOLUTION
 # This file sits one directory below the lesson, and drives the reference C build.
 try:
     LESSON_DIR = Path(__file__).resolve().parent.parent
@@ -73,7 +73,7 @@ except NameError:  # a notebook has no __file__
 
 C_SRC = "solutions/lesson.c"
 BIN = "solutions/lesson_bin"
-# ATLAS_ONLY_END
+# COMMONS_ONLY_END
 
 # Mirrored exactly from lesson.c. Both sides must build the same capture out of the same
 # bytes or no comparison between them means anything.
@@ -727,7 +727,7 @@ def float_health(counts: np.ndarray, baseline: np.ndarray) -> np.ndarray:
     engineering value is 2048 / 256 = 8.0, the root mean square of 32 copies of 8.0 is 8.0,
     and 8.0 / 8.0 is 1.0.
     """
-    # ATLAS_STUB_END
+    # COMMONS_STUB_END
     x = np.asarray(counts, dtype=np.float64)
     if x.shape[-1] == 0:
         raise ValueError("the burst axis is empty: there is nothing to take a mean of")
@@ -843,7 +843,7 @@ def agreement_report(h_float: np.ndarray, h_wire: np.ndarray, threshold: float) 
     Both rows agree on the alarm (no, yes), so all three counts are 0. The effective
     threshold is ceil(1.55 * 256) / 256 = 397 / 256 = 1.55078125.
     """
-    # ATLAS_STUB_END
+    # COMMONS_STUB_END
     a = np.asarray(h_float, dtype=np.float64)
     b = np.asarray(h_wire, dtype=np.float64)
     if a.shape != b.shape:
@@ -1143,7 +1143,7 @@ def psi(reference: np.ndarray, current: np.ndarray, n_bins: int = 10,
     every term is 0 * ln(1). Move every value in `current` above reference.max() and all of
     it lands in the open top bin, which is what the infinite outer edges are for.
     """
-    # ATLAS_STUB_END
+    # COMMONS_STUB_END
     ref = np.asarray(reference, dtype=np.float64).ravel()
     cur = np.asarray(current, dtype=np.float64).ravel()
     if ref.size == 0 or cur.size == 0:
@@ -1368,11 +1368,11 @@ if _IS_MAIN:
 # (d) precision at the chosen operating point
 
 # %%
-# ATLAS_ONLY_STUDENT
+# COMMONS_ONLY_STUDENT
 SELF_CHECK = {1: "?", 2: "?", 3: "?", 4: "?"}   # <- put a, b, c or d in each
-# ATLAS_ONLY_SOLUTION
+# COMMONS_ONLY_SOLUTION
 SELF_CHECK = {1: "c", 2: "b", 3: "d", 4: "c"}
-# ATLAS_ONLY_END
+# COMMONS_ONLY_END
 
 
 # The marker holds a salted digest of each answer, not the answer. It still tells you

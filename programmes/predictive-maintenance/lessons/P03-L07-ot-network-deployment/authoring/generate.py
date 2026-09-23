@@ -13,10 +13,10 @@ cannot drift apart:
 
 Two mechanisms, both line-based:
 
-  * `ATLAS_ONLY_STUDENT` / `ATLAS_ONLY_SOLUTION` / `ATLAS_ONLY_END` blocks keep one branch
+  * `COMMONS_ONLY_STUDENT` / `COMMONS_ONLY_SOLUTION` / `COMMONS_ONLY_END` blocks keep one branch
     and drop the other, plus the three marker lines. This is how the title, the build paths
     and the self-check answers differ between the two files.
-  * an `ATLAS_STUB_END` marker inside a function body means: in the STUDENT file, replace
+  * an `COMMONS_STUB_END` marker inside a function body means: in the STUDENT file, replace
     everything from that marker to the end of the function with the stub in stubs.py. The
     marker line itself never ships.
 
@@ -35,17 +35,17 @@ from stubs import C_STUBS, PY_STUBS, SELF_CHECK_ANSWERS  # noqa: E402
 
 
 def pick_branch(lines, want):
-    """Keep the `want` branch of every ATLAS_ONLY block and drop the markers."""
+    """Keep the `want` branch of every COMMONS_ONLY block and drop the markers."""
     out, mode = [], "both"
     for line in lines:
         tag = line.strip().lstrip("/#").strip()
-        if tag == "ATLAS_ONLY_STUDENT":
+        if tag == "COMMONS_ONLY_STUDENT":
             mode = "student"
             continue
-        if tag == "ATLAS_ONLY_SOLUTION":
+        if tag == "COMMONS_ONLY_SOLUTION":
             mode = "solution"
             continue
-        if tag == "ATLAS_ONLY_END":
+        if tag == "COMMONS_ONLY_END":
             mode = "both"
             continue
         if mode in ("both", want):
@@ -58,7 +58,7 @@ def c_student(lines):
     out, i = [], 0
     while i < len(lines):
         line = lines[i]
-        if line.strip() == "// ATLAS_STUB_END":
+        if line.strip() == "// COMMONS_STUB_END":
             name = None
             for back in range(len(out) - 1, -1, -1):
                 m = re.match(r"^static\s+[\w\s*]+?\b(\w+)\s*\(", out[back])
@@ -83,7 +83,7 @@ def py_student(lines):
     out, i = [], 0
     while i < len(lines):
         line = lines[i]
-        if line.strip() == "# ATLAS_STUB_END":
+        if line.strip() == "# COMMONS_STUB_END":
             name = None
             for back in range(len(out) - 1, -1, -1):
                 m = re.match(r"^def\s+(\w+)\s*\(", out[back])
@@ -131,10 +131,10 @@ def main() -> int:
     py = (HERE / "lesson.master.py").read_text().split("\n")
 
     write(LESSON / "solutions" / "lesson.c",
-          drop_markers(pick_branch(c, "solution"), "// ATLAS_STUB_END"))
+          drop_markers(pick_branch(c, "solution"), "// COMMONS_STUB_END"))
     write(LESSON / "lesson.c", c_student(pick_branch(c, "student")))
     write(LESSON / "solutions" / "lesson_solution.py",
-          drop_markers(pick_branch(py, "solution"), "# ATLAS_STUB_END"))
+          drop_markers(pick_branch(py, "solution"), "# COMMONS_STUB_END"))
     write(LESSON / "lesson.py", py_student(pick_branch(py, "student")))
 
     # Gate 7: no student-facing PROSE line may point at a directory the student never gets.

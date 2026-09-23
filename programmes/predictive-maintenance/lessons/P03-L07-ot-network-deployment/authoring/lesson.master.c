@@ -1,4 +1,4 @@
-// ATLAS_ONLY_STUDENT
+// COMMONS_ONLY_STUDENT
 // P03-L07 — Deployment on an OT network. THE GATEWAY.
 //
 // Four exercises live in this file: gw_alloc, frame_decode, q_health, and the three
@@ -9,7 +9,7 @@
 //     make test                                                  build, then run the self-test
 //     make clean                                                 delete every build product
 //
-// ATLAS_ONLY_SOLUTION
+// COMMONS_ONLY_SOLUTION
 // P03-L07 — Deployment on an OT network. THE GATEWAY.  REFERENCE SOLUTION.
 //
 // This is lesson.c with the six exercise bodies filled in. Everything else is identical to
@@ -17,7 +17,7 @@
 //
 //     make SRC=solutions/lesson.c BIN=solutions/lesson_bin test   the reference build
 //
-// ATLAS_ONLY_END
+// COMMONS_ONLY_END
 // RUN `make clean` AFTER MOVING OR COPYING YOUR CHECKOUT. make compares timestamps, and a
 // binary that arrived with a copied directory is newer than the .c beside it, so make will
 // not rebuild it and you will be testing yesterday's answers.
@@ -72,7 +72,7 @@ static const uint64_t kGamma = 0x9E3779B97F4A7C15ULL;
 
 #define SF_REFUSED       0u     // sf_push returns this when the buffer is full
 
-#define ATLAS_MAYBE_UNUSED __attribute__((unused))
+#define COMMONS_MAYBE_UNUSED __attribute__((unused))
 
 typedef struct {
   uint8_t addr;
@@ -113,7 +113,7 @@ static jmp_buf g_jmp;
 static int g_jmp_active = 0;
 static char g_msg[1024];
 
-static ATLAS_MAYBE_UNUSED void todo(const char* what, const char* hint) {
+static COMMONS_MAYBE_UNUSED void todo(const char* what, const char* hint) {
   snprintf(g_msg, sizeof g_msg, "%s() is still a stub — %s", what, hint);
   if (g_jmp_active) longjmp(g_jmp, 1);
   fprintf(stderr, "NOT IMPLEMENTED: %s\n", g_msg);
@@ -195,7 +195,7 @@ static void gw_reset(void) {
 // g_arena_used == 1. The next gw_alloc(1) aligns 1 up to 8 and returns &g_arena[8], leaving
 // g_arena_used == 9 — so the two pointers are 8 bytes apart, not 1.
 static void* gw_alloc(size_t bytes) {
-  // ATLAS_STUB_END
+  // COMMONS_STUB_END
   if (bytes == 0) return NULL;
   if (g_frozen) {
     g_alloc_refused++;
@@ -235,7 +235,7 @@ static uint16_t crc16(const uint8_t* p, size_t n) {
 // should not: the answer would then depend on the chip. This truncates — isqrt64(8) is 2 —
 // and that truncation is one of the two places the gateway's answer drifts below the
 // notebook's, which is a thing you will measure rather than be told.
-static ATLAS_MAYBE_UNUSED uint64_t isqrt64(uint64_t v) {
+static COMMONS_MAYBE_UNUSED uint64_t isqrt64(uint64_t v) {
   uint64_t rem = 0, root = 0;
   for (int i = 0; i < 32; i++) {
     root <<= 1;
@@ -286,7 +286,7 @@ static ATLAS_MAYBE_UNUSED uint64_t isqrt64(uint64_t v) {
 // stored low byte first. Change the 0x22 to 0x23 and the same call returns FD_CRC and writes
 // nothing.
 static int frame_decode(const uint8_t* buf, size_t len, Frame* out) {
-  // ATLAS_STUB_END
+  // COMMONS_STUB_END
   if (len < 5) return FD_SHORT;
   if (buf[1] != FUNC_READ_INPUT) return FD_FUNC;
   size_t payload = len - 5;
@@ -351,7 +351,7 @@ static int frame_decode(const uint8_t* buf, size_t len, Frame* out) {
 // and (524288 << 16) / 524288 is 65536 — Q16.16 for 1.0. A machine sitting exactly on its
 // commissioned baseline reads 1.0, which is the whole point of dividing by a baseline.
 static int32_t q_health(const int32_t* x_q, int n, int32_t baseline_q) {
-  // ATLAS_STUB_END
+  // COMMONS_STUB_END
   if (n <= 0 || baseline_q <= 0) return -1;
   int64_t acc = 0;
   for (int i = 0; i < n; i++) acc += (int64_t)x_q[i] * (int64_t)x_q[i];
@@ -415,7 +415,7 @@ static int32_t q_health(const int32_t* x_q, int n, int32_t baseline_q) {
 // sf_take(out, 2) returns 2 and leaves count at 3. sf_ack(2) drops records 1 and 2 and
 // returns 2, leaving count at 1. sf_ack(2) again returns 0. A fourth push returns 4.
 static uint32_t sf_push(Ring* r, uint8_t machine, uint16_t hour, uint16_t wire) {
-  // ATLAS_STUB_END
+  // COMMONS_STUB_END
   if (r->count >= r->cap) {
     r->refused++;
     return SF_REFUSED;
@@ -434,7 +434,7 @@ static uint32_t sf_push(Ring* r, uint8_t machine, uint16_t hour, uint16_t wire) 
 }
 
 static int sf_take(const Ring* r, Record* out, int max) {
-  // ATLAS_STUB_END
+  // COMMONS_STUB_END
   int n = r->count < max ? r->count : max;
   if (n < 0) n = 0;
   for (int i = 0; i < n; i++) out[i] = r->slot[(r->head + i) % r->cap];
@@ -442,7 +442,7 @@ static int sf_take(const Ring* r, Record* out, int max) {
 }
 
 static int sf_ack(Ring* r, uint32_t seq) {
-  // ATLAS_STUB_END
+  // COMMONS_STUB_END
   int dropped = 0;
   while (r->count > 0 && r->slot[r->head].seq <= seq) {
     r->head = (r->head + 1) % r->cap;

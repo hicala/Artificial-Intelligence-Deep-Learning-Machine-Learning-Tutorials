@@ -1,7 +1,7 @@
 """The stub bodies P03-L07 hands the student, and the self-check answer key.
 
 Author-side only: nothing here is copied into the student bundle. Each stub replaces the
-solution body of the function it is keyed by, from the ATLAS_STUB_END marker to the end of
+solution body of the function it is keyed by, from the COMMONS_STUB_END marker to the end of
 the function. The requirements, the worked example and the Returns line live in the comment
 or docstring ABOVE the marker, so they are identical in the student file and the reference.
 """

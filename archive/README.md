@@ -1,3 +1,9 @@
+> **Archived.** These are the tutorials this repository carried from 2017 to 2025, kept here
+> unchanged with their history. The repository now leads with
+> [Synapsa Commons](https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials#readme): free, hands-on AI courses you run in
+> Colab, Kaggle, Binder, Codespaces or your own Jupyter. Links into the old layout keep working at
+> the [`legacy-tutorials`](https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/tree/legacy-tutorials) tag.
+
 # NEW LIST 2023 - 2024: Machine-Learning / Deep-Learning / AI + Web3 -Tutorials
 
 Hi - Thanks for dropping by!<br>
@@ -10,7 +16,7 @@ More importantly the applications of ML/DL/AI into industry areas such as Transp
 <br>
 Finally, it is **YOUR** help I will seek to make it more useful and less boring, so please do suggest/comment/contribute!
 <p align="center">
-  <img src="https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/blob/master/images/DK.png">
+  <img src="https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/blob/master/archive/images/DK.png">
 </p>
 
 ## Index
@@ -51,7 +57,7 @@ IPython Notebook(s) and other programming tools such as Torch/Lua/D lang in demo
 
 ### uber-pyro-probabalistic-tutorials
 <p align="center">
-  <img src="https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/blob/master/images/pyro.png">
+  <img src="https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/blob/master/archive/images/pyro.png">
 </p>
 
 Additional PyRo tutorials:
@@ -65,20 +71,20 @@ Additional PyRo tutorials:
 * [pyro-examples/GMM](http://pyro.ai/examples/gmm.html)
 * [pyro-examples/Gaussian Process](http://pyro.ai/examples/gp.html)
 * [pyro-examples/Bayesian Optimization](http://pyro.ai/examples/bo.html)
-* [Full Pyro Code](https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/tree/master/deep-learning/UBER-pyro)
+* [Full Pyro Code](https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/tree/master/archive/deep-learning/UBER-pyro)
 
 
 
 ### netflix-vectorflow-tutorials
 <p align="center">
-  <img src="https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/blob/master/images/VectorFlow.png">
+  <img src="https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/blob/master/archive/images/VectorFlow.png">
 </p>
 
 * [MNIST Example, running with Dlang](https://github.com/Netflix/vectorflow/tree/master/examples)
 
 ### pytorch-tutorials
 <p align="center">
-  <img src="https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/blob/master/images/PyTorch.png">
+  <img src="https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/blob/master/archive/images/PyTorch.png">
 </p>
 
 | Level | Description |
@@ -86,7 +92,7 @@ Additional PyRo tutorials:
 | [Beginners/Zakizhou](https://github.com/pytorch/tutorials/tree/master/beginner_source) | Learning the basics of PyTorch from Facebook. |
 | [Intermedia/Quanvuong](https://github.com/pytorch/tutorials/tree/master/intermediate_source) | Learning the intermediate stuff about PyTorch of from Facebook. |
 | [Advanced/Chsasank](https://github.com/pytorch/tutorials/tree/master/advanced_source) | Learning the advanced stuff about PyTorch of from Facebook. |
-| [Learning PyTorch by Examples - Numpy, Tensors and Autograd](https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/tree/master/pytorch) | At its core, PyTorch provides two main features an n-dimensional Tensor, similar to numpy but can run on GPUs AND automatic differentiation for building and training neural networks. |
+| [Learning PyTorch by Examples - Numpy, Tensors and Autograd](https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/tree/master/archive/pytorch) | At its core, PyTorch provides two main features an n-dimensional Tensor, similar to numpy but can run on GPUs AND automatic differentiation for building and training neural networks. |
 | [PyTorch - Getting to know autograd.Variable, Gradient, Neural Network](https://github.com/TarrySingh/Artificial-Intelligence-Deep-Learning-Machine-Learning-Tutorials/blob/master/pytorch/PyTorch%20NN%20Basics%20-%20Autograd%20Gradient%20Neural%20Network%20Loss%20Backprop.ipynb) | Here we start with ultimate basics of Tensors, wrap a Tensor with Variable module, play with nn.Module and implement forward and backward function. |
 
 

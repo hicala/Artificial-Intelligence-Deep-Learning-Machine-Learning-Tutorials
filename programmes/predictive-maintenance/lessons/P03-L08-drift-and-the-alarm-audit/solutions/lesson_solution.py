@@ -38,8 +38,11 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
+import io
 import sys
 import time
+import traceback
 from typing import Callable, NamedTuple, Sequence
 
 import numpy as np
@@ -191,25 +194,71 @@ class Response(NamedTuple):
 
 _FAILED_CHECKS: list[str] = []
 
+# The exercises, in the order you meet them, and the functions each one asks you to write.
+# The progress board at the foot of the notebook is built from this, and a cell that is
+# waiting on an unfinished exercise names it from here.
+_EXERCISES: dict[str, tuple[str, ...]] = {
+    "exercise 1": ("reference_bins",),
+    "exercise 2": ("psi",),
+    "exercise 3": ("conditional_psi",),
+    "exercise 4": ("drift_signature",),
+    "exercise 5": ("diagnose_drift",),
+    "exercise 6": ("adjust_feature",),
+    "exercise 7": ("estimate_prices",),
+    "exercise 8": ("apply_fix",),
+    "exercise 9": ("respond_to_drift",),
+}
+_STATUS: dict[str, str] = {}   # label -> "passed" | "failed" | "not started", latest run
 
-def _try(label: str, check: Callable[[], None]) -> None:
+
+def _named(labels: list[str]) -> str:
+    """["exercise 3"] -> "exercise 3 (conditional_psi)"; several -> "exercises 1, 2 and 7"."""
+    if len(labels) == 1:
+        return f"{labels[0]} ({', '.join(_EXERCISES[labels[0]])})"
+    nums = [label.split()[-1] for label in labels]
+    return "exercises " + ", ".join(nums[:-1]) + " and " + nums[-1]
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple[str, ...] = ()) -> None:
     """Run a check, or a demo that depends on your code, without derailing the notebook.
 
     A stub you have not filled in yet simply says so. A wrong answer prints the check's own
     message — which names the likely mistake — and the notebook carries on, so one broken
-    exercise never hides the feedback on the others. Nothing is swallowed: every failure is
-    recorded and the `__main__` block at the foot of this file exits non-zero if any remain.
+    exercise never hides the feedback on the others. A demo names the exercises it `needs`:
+    until each has passed its check, the demo says which one it is waiting for and skips.
+    Nothing is swallowed: every outcome is recorded in `_STATUS` for the progress board at the
+    foot of the notebook, and every failure in `_FAILED_CHECKS`, which ends a script run
+    non-zero.
     """
+    waiting = [name for name in _EXERCISES   # in the order you meet them
+               if name in needs and _STATUS.get(name) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        print(f"{label}: skipped — needs {_named(waiting)} to pass first.")
+        return
     try:
         check()
-    except NotImplementedError:
-        print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        stub = traceback.extract_tb(exc.__traceback__)[-1].name   # the frame that raised
+        owner = [name for name, funcs in _EXERCISES.items() if stub in funcs and name != label]
+        if owner:
+            print(f"{label}: skipped — needs {_named(owner)} first.")
+        elif label in _EXERCISES:
+            print(f"{label}: not implemented yet — fill in {stub}() above, then re-run "
+                  "this cell.")
+        else:
+            print(f"{label}: skipped — {stub}() is not implemented yet.")
     except AssertionError as exc:
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: FAILED — {exc}")
     except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
 
 
 def _show(fig: "matplotlib.figure.Figure") -> None:
@@ -714,7 +763,7 @@ def _show_null_band() -> None:
     print(f"  anything above {band:.5f} is something this plant does not do by chance.")
 
 
-_try("null band", _show_null_band)
+_try("null band", _show_null_band, needs=("exercise 1", "exercise 2"))
 
 # %% [markdown]
 # ## 3b. Why the bins are quantiles
@@ -754,7 +803,8 @@ def _show_why_the_bins_are_quantiles() -> None:
     print("equal-mass rule is the one that behaves the same way on all three.")
 
 
-_try("why quantile bins", _show_why_the_bins_are_quantiles)
+_try("why quantile bins", _show_why_the_bins_are_quantiles,
+     needs=("exercise 1", "exercise 2"))
 
 # %% [markdown]
 # ## 4. Exercise 3 — `conditional_psi()`
@@ -988,6 +1038,10 @@ _try("exercise 4", _check_drift_signature)
 # and the median shift that cannot separate any of them.
 
 # %%
+# Every demo from here on that scores a window against the reference needs these four.
+_FOR_SIGNATURES = ("exercise 1", "exercise 2", "exercise 3", "exercise 4")
+
+
 def _show_signatures() -> None:
     band = null_psi_band(REFERENCE)
     print(f"alert level (measured, section 3): {band:.5f}\n")
@@ -1004,7 +1058,7 @@ def _show_signatures() -> None:
     print("section is the rule that turns them into a name.")
 
 
-_try("signature table", _show_signatures)
+_try("signature table", _show_signatures, needs=_FOR_SIGNATURES)
 
 # %% [markdown]
 # ## 6. Exercise 5 — `diagnose_drift()`, and why the order of the tests is the lesson
@@ -1176,7 +1230,7 @@ def _show_diagnoses() -> None:
     print("both are true. Only one of them is a reason to trust the other two statistics.")
 
 
-_try("diagnoses", _show_diagnoses)
+_try("diagnoses", _show_diagnoses, needs=_FOR_SIGNATURES + ("exercise 5",))
 
 # %% [markdown]
 # ## 7. Exercise 6 — `adjust_feature()`, the three fixes
@@ -1341,7 +1395,7 @@ def _show_what_the_fixes_remove() -> None:
     print("make that untrue. Section 9 prices what happens when you try.")
 
 
-_try("what the fixes remove", _show_what_the_fixes_remove)
+_try("what the fixes remove", _show_what_the_fixes_remove, needs=("exercise 6",))
 
 # %% [markdown]
 # ## 8. Exercise 7 — `estimate_prices()`, the audit that closes the loop
@@ -1546,7 +1600,7 @@ def _show_the_audit() -> None:
           f"{ratio_guess:.1f} and measures {ratio_real:.1f}.")
 
 
-_try("the audit", _show_the_audit)
+_try("the audit", _show_the_audit, needs=("exercise 7",))
 
 # %% [markdown]
 # ## 9. Exercise 8 — `apply_fix()`, and the cost of the wrong fix
@@ -1793,7 +1847,7 @@ def _show_matrix() -> None:
           f"failures. Nothing is wrong with the arithmetic. It is the wrong arithmetic.")
 
 
-_try("the matrix", _show_matrix)
+_try("the matrix", _show_matrix, needs=tuple(_EXERCISES))   # every exercise feeds it
 
 # %% [markdown]
 # One row of that table deserves a second look. On the **regime** window re-pricing lands on
@@ -1825,7 +1879,8 @@ def _show_the_regime_trap() -> None:
     print("what it was for. Conditioning carries the reason with it.")
 
 
-_try("the regime trap", _show_the_regime_trap)
+_try("the regime trap", _show_the_regime_trap,
+     needs=("exercise 6", "exercise 7", "exercise 8"))
 
 # %% [markdown]
 # ## 12. Closing the loop
@@ -1873,7 +1928,7 @@ def _close_the_loop() -> None:
           f"never travel without a label.")
 
 
-_try("closing the loop", _close_the_loop)
+_try("closing the loop", _close_the_loop, needs=("exercise 7",))
 
 # %% [markdown]
 # ## 13. Common mistakes
@@ -1937,7 +1992,8 @@ def _price_the_rolling_baseline() -> None:
     print(f"a time, and the alarm log will look quieter every year.")
 
 
-_try("the rolling baseline, priced", _price_the_rolling_baseline)
+_try("the rolling baseline, priced", _price_the_rolling_baseline,
+     needs=("exercise 6", "exercise 7"))
 
 # %% [markdown]
 # ## 14. Self-check
@@ -1984,7 +2040,7 @@ def _self_check_numbers() -> None:
           f"history, arriving weeks late")
 
 
-_try("self-check numbers", _self_check_numbers)
+_try("self-check numbers", _self_check_numbers, needs=_FOR_SIGNATURES + ("exercise 7",))
 
 # %% [markdown]
 # 4. The alarm audit has four false-alarm lines and a minimum of five. Your price estimator
@@ -2036,7 +2092,7 @@ def _handover() -> None:
           f"{expected_cost(counts, audited.prices):,.0f}")
 
 
-_try("handover note", _handover)
+_try("handover note", _handover, needs=("exercise 1", "exercise 2", "exercise 7"))
 
 # %% [markdown]
 # ## What you built, and where it goes next
@@ -2060,21 +2116,48 @@ _try("handover note", _handover)
 # no meaning.
 
 # %%
+_MARKS = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+
+
+def _progress_board() -> None:
+    """One line per exercise, from the latest run of its check, then the tally."""
+    width = max(len(", ".join(funcs)) for funcs in _EXERCISES.values())
+    print("progress board")
+    for label, funcs in _EXERCISES.items():
+        state = _STATUS.get(label, "not started")
+        print(f"  {_MARKS[state]} {label:<11} {', '.join(funcs):<{width}}  {state}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    print(f"\n{done} of {len(_EXERCISES)} exercises complete")
+    failing = [label for label in _EXERCISES if _STATUS.get(label) == "failed"]
+    if failing:
+        print("failing right now: " + ", ".join(failing) + ". Each one printed what went "
+              "wrong in its own cell above, and every exercise has hints you can open.")
+    elif done < len(_EXERCISES):
+        print("work top to bottom: every exercise has hints you can open above its code.")
+
+
+# Your progress board. Every check is re-run here, quietly, against your code as it stands
+# now — each one already printed its feedback in its own cell above — so the board is
+# current even if you edited an exercise and did not re-run its check.
 if __name__ == "__main__":
-    for _name, _check in (("exercise 1", _check_reference_bins),
-                          ("exercise 2", _check_psi),
-                          ("exercise 3", _check_conditional_psi),
-                          ("exercise 4", _check_drift_signature),
-                          ("exercise 5", _check_diagnose_drift),
-                          ("exercise 6", _check_adjust_feature),
-                          ("exercise 7", _check_estimate_prices),
-                          ("exercise 8", _check_apply_fix),
-                          ("exercise 9", _check_respond_to_drift)):
-        _try(_name, _check)
-    print(f"\nnotebook wall time so far: {time.perf_counter() - _LESSON_T0:.1f}s")
+    with contextlib.redirect_stdout(io.StringIO()):
+        for _name, _check in (("exercise 1", _check_reference_bins),
+                              ("exercise 2", _check_psi),
+                              ("exercise 3", _check_conditional_psi),
+                              ("exercise 4", _check_drift_signature),
+                              ("exercise 5", _check_diagnose_drift),
+                              ("exercise 6", _check_adjust_feature),
+                              ("exercise 7", _check_estimate_prices),
+                              ("exercise 8", _check_apply_fix),
+                              ("exercise 9", _check_respond_to_drift)):
+            _try(_name, _check)
+    _progress_board()
+    print(f"\nnotebook wall time so far: {time.perf_counter() - _LESSON_T0:.1f} s")
     # A stub you have not reached yet is not a failure. A check that ran and came back wrong
-    # is, and it ends this run non-zero rather than letting a green exit code paper over it.
-    if _FAILED_CHECKS:
+    # is: in a script or under CI it ends this run non-zero, rather than letting a green exit
+    # code paper over it. Inside a notebook kernel the board above has already said so, in a
+    # line rather than a traceback at the foot of the page.
+    if _FAILED_CHECKS and "ipykernel" not in sys.modules:
         raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))
 
 

@@ -40,8 +40,11 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
+import io
 import sys
 import time
+import traceback
 from typing import Callable, NamedTuple, Sequence
 
 import numpy as np
@@ -131,25 +134,71 @@ class Posterior(NamedTuple):
 
 _FAILED_CHECKS: list[str] = []
 
+# The exercises, in the order you meet them, and the functions each one asks you to write.
+# The progress board at the foot of the notebook is built from this, and a cell that is
+# waiting on an unfinished exercise names it from here.
+_EXERCISES: dict[str, tuple[str, ...]] = {
+    "exercise 1": ("log_signal",),
+    "exercise 2": ("fit_posterior",),
+    "exercise 3": ("rul_samples",),
+    "exercise 4": ("rul_track",),
+    "exercise 5": ("rul_rmse",),
+    "exercise 6": ("phm_score",),
+    "exercise 7": ("cone_breakdown",),
+    "exercise 8": ("warning_lead",),
+    "exercise 9": ("best_quantile",),
+}
+_STATUS: dict[str, str] = {}   # label -> "passed" | "failed" | "not started", latest run
 
-def _try(label: str, check: Callable[[], None]) -> None:
+
+def _named(labels: list[str]) -> str:
+    """["exercise 3"] -> "exercise 3 (rul_samples)"; several -> "exercises 1, 2 and 4"."""
+    if len(labels) == 1:
+        return f"{labels[0]} ({', '.join(_EXERCISES[labels[0]])})"
+    nums = [label.split()[-1] for label in labels]
+    return "exercises " + ", ".join(nums[:-1]) + " and " + nums[-1]
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple[str, ...] = ()) -> None:
     """Run a check, or a demo that depends on your code, without derailing the notebook.
 
     A stub you have not filled in yet simply says so. A wrong answer prints the check's own
     message — which names the likely mistake — and the notebook carries on, so one broken
-    exercise never hides the feedback on the others. Nothing is swallowed: every failure is
-    recorded and the `__main__` block at the foot of this file exits non-zero if any remain.
+    exercise never hides the feedback on the others. A demo names the exercises it `needs`:
+    until each has passed its check, the demo says which one it is waiting for and skips.
+    Nothing is swallowed: every outcome is recorded in `_STATUS` for the progress board at the
+    foot of the notebook, and every failure in `_FAILED_CHECKS`, which ends a script run
+    non-zero.
     """
+    waiting = [name for name in _EXERCISES   # in the order you meet them
+               if name in needs and _STATUS.get(name) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        print(f"{label}: skipped — needs {_named(waiting)} to pass first.")
+        return
     try:
         check()
-    except NotImplementedError:
-        print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        stub = traceback.extract_tb(exc.__traceback__)[-1].name   # the frame that raised
+        owner = [name for name, funcs in _EXERCISES.items() if stub in funcs and name != label]
+        if owner:
+            print(f"{label}: skipped — needs {_named(owner)} first.")
+        elif label in _EXERCISES:
+            print(f"{label}: not implemented yet — fill in {stub}() above, then re-run "
+                  "this cell.")
+        else:
+            print(f"{label}: skipped — {stub}() is not implemented yet.")
     except AssertionError as exc:
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: FAILED — {exc}")
     except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
 
 
 # %% [markdown]
@@ -379,7 +428,7 @@ def _show_prior() -> None:
           " — the ones that never failed still have a slope")
 
 
-_try("the fleet prior", _show_prior)
+_try("the fleet prior", _show_prior, needs=("exercise 1",))
 
 # %% [markdown]
 # ## 4. Exercise 2 — `fit_posterior()`
@@ -706,6 +755,9 @@ _try("exercise 4", _check_rul_track)
 
 # %%
 _PREDICTIONS: list = []
+# fleet_predictions() runs your first four exercises end to end, so every cell that
+# reads its table waits until all four have passed their checks.
+_FOR_TRACKS = ("exercise 1", "exercise 2", "exercise 3", "exercise 4")
 
 
 def checkpoints_for(run: Run) -> np.ndarray:
@@ -761,7 +813,7 @@ def _show_narrowing() -> None:
           "so:\nnear the end there is less life left to be uncertain about.")
 
 
-_try("the interval narrows", _show_narrowing)
+_try("the interval narrows", _show_narrowing, needs=_FOR_TRACKS)
 
 # %%
 def _plot_one_track() -> None:
@@ -792,7 +844,7 @@ def _plot_one_track() -> None:
           f"truth")
 
 
-_try("the track, plotted", _plot_one_track)
+_try("the track, plotted", _plot_one_track, needs=_FOR_TRACKS)
 
 # %% [markdown]
 # ## 7. Exercise 5 — `rul_rmse()`, the number everybody reports
@@ -1078,7 +1130,7 @@ def _plot_the_cone() -> None:
           "and\nthey are not.")
 
 
-_try("the cone, plotted", _plot_the_cone)
+_try("the cone, plotted", _plot_the_cone, needs=_FOR_TRACKS + ("exercise 7",))
 
 # %% [markdown]
 # ## 10. Exercise 8 — `warning_lead()`, the metric the workshop cares about
@@ -1263,6 +1315,8 @@ _try("exercise 9", _check_best_quantile)
 
 # %%
 _SWEEP: list = []
+# metric_sweep() scores that table with your four metrics as well.
+_FOR_SWEEP = _FOR_TRACKS + ("exercise 5", "exercise 6", "exercise 7", "exercise 8")
 
 
 def metric_sweep() -> dict:
@@ -1338,7 +1392,7 @@ def _the_wrong_metric_wins() -> None:
           "you ship.")
 
 
-_try("the wrong metric wins", _the_wrong_metric_wins)
+_try("the wrong metric wins", _the_wrong_metric_wins, needs=_FOR_SWEEP + ("exercise 9",))
 
 # %%
 def _plot_the_sweep() -> None:
@@ -1367,7 +1421,7 @@ def _plot_the_sweep() -> None:
           f"q={QUANTILES[i_s]:.2f}")
 
 
-_try("the sweep, plotted", _plot_the_sweep)
+_try("the sweep, plotted", _plot_the_sweep, needs=_FOR_SWEEP)
 
 # %% [markdown]
 # ## 12. Common mistakes
@@ -1420,7 +1474,7 @@ def _check_calibration() -> None:
           f"about before\nanybody argues about the model.")
 
 
-_try("is the interval honest", _check_calibration)
+_try("is the interval honest", _check_calibration, needs=_FOR_TRACKS)
 
 # %% [markdown]
 # ## 13. Self-check
@@ -1496,7 +1550,7 @@ def _handover() -> None:
           f"All three are\n  in the model, and none of them is in the training data.")
 
 
-_try("handover note", _handover)
+_try("handover note", _handover, needs=_FOR_SWEEP + ("exercise 9",))
 
 # %% [markdown]
 # ## What you built, and where it goes next
@@ -1517,21 +1571,48 @@ _try("handover note", _handover)
 # when somebody shows you a leaderboard, ask which direction the errors point.**
 
 # %%
+_MARKS = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+
+
+def _progress_board() -> None:
+    """One line per exercise, from the latest run of its check, then the tally."""
+    width = max(len(", ".join(funcs)) for funcs in _EXERCISES.values())
+    print("progress board")
+    for label, funcs in _EXERCISES.items():
+        state = _STATUS.get(label, "not started")
+        print(f"  {_MARKS[state]} {label:<12} {', '.join(funcs):<{width}}  {state}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    print(f"\n{done} of {len(_EXERCISES)} exercises complete")
+    failing = [label for label in _EXERCISES if _STATUS.get(label) == "failed"]
+    if failing:
+        print("failing right now: " + ", ".join(failing) + ". Each one printed what went "
+              "wrong in its own cell above, and every exercise has hints you can open.")
+    elif done < len(_EXERCISES):
+        print("work top to bottom: every exercise has hints you can open above its code.")
+
+
+# Your progress board. Every check is re-run here, quietly, against your code as it stands
+# now — each one already printed its feedback in its own cell above — so the board is
+# current even if you edited an exercise and did not re-run its check.
 if __name__ == "__main__":
-    for _name, _check in (("exercise 1", _check_log_signal),
-                          ("exercise 2", _check_fit_posterior),
-                          ("exercise 3", _check_rul_samples),
-                          ("exercise 4", _check_rul_track),
-                          ("exercise 5", _check_rul_rmse),
-                          ("exercise 6", _check_phm_score),
-                          ("exercise 7", _check_cone_breakdown),
-                          ("exercise 8", _check_warning_lead),
-                          ("exercise 9", _check_best_quantile)):
-        _try(_name, _check)
+    with contextlib.redirect_stdout(io.StringIO()):
+        for _name, _check in (("exercise 1", _check_log_signal),
+                              ("exercise 2", _check_fit_posterior),
+                              ("exercise 3", _check_rul_samples),
+                              ("exercise 4", _check_rul_track),
+                              ("exercise 5", _check_rul_rmse),
+                              ("exercise 6", _check_phm_score),
+                              ("exercise 7", _check_cone_breakdown),
+                              ("exercise 8", _check_warning_lead),
+                              ("exercise 9", _check_best_quantile)):
+            _try(_name, _check)
+    _progress_board()
     print(f"\nnotebook wall time so far: {time.perf_counter() - _LESSON_T0:.1f}s")
     # A stub you have not reached yet is not a failure. A check that ran and came back wrong
-    # is, and it ends this run non-zero rather than letting a green exit code paper over it.
-    if _FAILED_CHECKS:
+    # is: in a script or under CI it ends this run non-zero, rather than letting a green exit
+    # code paper over it. Inside a notebook kernel the board above has already said so, in a
+    # line rather than a traceback at the foot of the page.
+    if _FAILED_CHECKS and "ipykernel" not in sys.modules:
         raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))
 
 # %% [markdown]

@@ -37,9 +37,12 @@
 
 # %%
 # Setup: everything the lesson needs, in one cell, with versions printed.
+import contextlib
+import io
 import math
 import sys
 import time
+import traceback
 from typing import Callable, NamedTuple, Sequence
 
 import numpy as np
@@ -133,27 +136,73 @@ class Schedule(NamedTuple):
 
 SCENARIO = Prices(planned=9_000.0, unplanned=180_000.0, life_per_hour=220.0)
 
-_FAILED_CHECKS: list = []
+_FAILED_CHECKS: list[str] = []
+
+# The exercises, in the order you meet them, and the functions each one asks you to write.
+# The progress board at the foot of the notebook is built from this, and a cell that is
+# waiting on an unfinished exercise names it from here.
+_EXERCISES: dict[str, tuple[str, ...]] = {
+    "exercise 1": ("forecast_summary",),
+    "exercise 2": ("survival_and_hazard",),
+    "exercise 3": ("expected_cost_at",),
+    "exercise 4": ("best_intervention_time",),
+    "exercise 5": ("realised_cost",),
+    "exercise 6": ("slot_costs",),
+    "exercise 7": ("fleet_cost_matrix",),
+    "exercise 8": ("greedy_schedule",),
+    "exercise 9": ("best_schedule",),
+}
+_STATUS: dict[str, str] = {}   # label -> "passed" | "failed" | "not started", latest run
 
 
-def _try(label: str, check: Callable[[], None]) -> None:
+def _named(labels: list[str]) -> str:
+    """["exercise 3"] -> "exercise 3 (expected_cost_at)"; several -> "exercises 1, 3 and 4"."""
+    if len(labels) == 1:
+        return f"{labels[0]} ({', '.join(_EXERCISES[labels[0]])})"
+    nums = [label.split()[-1] for label in labels]
+    return "exercises " + ", ".join(nums[:-1]) + " and " + nums[-1]
+
+
+def _try(label: str, check: Callable[[], None], needs: tuple[str, ...] = ()) -> None:
     """Run a check, or a demo that depends on your code, without derailing the notebook.
 
     A stub you have not filled in yet simply says so. A wrong answer prints the check's own
     message — which names the likely mistake — and the notebook carries on, so one broken
-    exercise never hides the feedback on the others. Nothing is swallowed: every failure is
-    recorded and the `__main__` block at the foot of this file exits non-zero if any remain.
+    exercise never hides the feedback on the others. A demo names the exercises it `needs`:
+    until each has passed its check, the demo says which one it is waiting for and skips.
+    Nothing is swallowed: every outcome is recorded in `_STATUS` for the progress board at the
+    foot of the notebook, and every failure in `_FAILED_CHECKS`, which ends a script run
+    non-zero.
     """
+    waiting = [name for name in _EXERCISES   # in the order you meet them
+               if name in needs and _STATUS.get(name) != "passed"]
+    if waiting:
+        _STATUS[label] = "not started"
+        print(f"{label}: skipped — needs {_named(waiting)} to pass first.")
+        return
     try:
         check()
-    except NotImplementedError:
-        print(f"{label}: not implemented yet — fill in the stub above, then re-run this cell.")
+    except NotImplementedError as exc:
+        _STATUS[label] = "not started"
+        stub = traceback.extract_tb(exc.__traceback__)[-1].name   # the frame that raised
+        owner = [name for name, funcs in _EXERCISES.items() if stub in funcs and name != label]
+        if owner:
+            print(f"{label}: skipped — needs {_named(owner)} first.")
+        elif label in _EXERCISES:
+            print(f"{label}: not implemented yet — fill in {stub}() above, then re-run "
+                  "this cell.")
+        else:
+            print(f"{label}: skipped — {stub}() is not implemented yet.")
     except AssertionError as exc:
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: FAILED — {exc}")
     except Exception as exc:  # a half-finished implementation raising something else
+        _STATUS[label] = "failed"
         _FAILED_CHECKS.append(label)
         print(f"{label}: raised {type(exc).__name__}: {exc}")
+    else:
+        _STATUS[label] = "passed"
 
 
 def _show(fig) -> None:
@@ -652,6 +701,11 @@ _try("exercise 4", _check_best_intervention_time)
 # computes the crossing from your `survival_and_hazard` and compares it with your sweep.
 
 # %%
+# The cells that plan one machine at a time use YOUR best_intervention_time, which prices
+# with YOUR expected_cost_at, and report YOUR forecast_summary beside it.
+_FOR_PLAN = ("exercise 1", "exercise 3", "exercise 4")
+
+
 def hazard_crossing(forecast: RULForecast, prices: Prices) -> int:
     """First hour at which the hazard reaches life_per_hour / (unplanned - planned).
 
@@ -690,7 +744,7 @@ def _two_routes_agree() -> None:
           f"dashboard shows.")
 
 
-_try("the mean is not the plan", _two_routes_agree)
+_try("the mean is not the plan", _two_routes_agree, needs=_FOR_PLAN + ("exercise 2",))
 
 # %%
 def _plot_cost_curve() -> None:
@@ -716,7 +770,7 @@ def _plot_cost_curve() -> None:
           f"higher at the mean")
 
 
-_try("cost curve", _plot_cost_curve)
+_try("cost curve", _plot_cost_curve, needs=_FOR_PLAN)
 
 # %% [markdown]
 # ## 7. Width, not just centre
@@ -761,7 +815,7 @@ def _width_and_centre() -> None:
           "recover\nthe plan from the mean with a fixed safety factor either.")
 
 
-_try("width and centre", _width_and_centre)
+_try("width and centre", _width_and_centre, needs=_FOR_PLAN)
 
 # %%
 def _plot_width() -> None:
@@ -781,7 +835,7 @@ def _plot_width() -> None:
     print("plotted: three forecasts with the same mean and three different optima")
 
 
-_try("width plot", _plot_width)
+_try("width plot", _plot_width, needs=("exercise 3", "exercise 4"))
 
 # %% [markdown]
 # ## 8. Exercise 5 — `realised_cost()`, and what a confident wrong answer costs
@@ -904,7 +958,7 @@ def _confidence_is_not_accuracy() -> None:
           f"about\nthe world, and pricing a plan takes them at their word.")
 
 
-_try("confidence is not accuracy", _confidence_is_not_accuracy)
+_try("confidence is not accuracy", _confidence_is_not_accuracy, needs=_FOR_PLAN + ("exercise 5",))
 
 # %% [markdown]
 # ## 9. Exercise 6 — `slot_costs()`: the calendar is not a clock
@@ -982,7 +1036,7 @@ def _calendar_price() -> None:
     print("\nand nobody has said yet that two of these machines want the same Thursday.")
 
 
-_try("what the calendar costs", _calendar_price)
+_try("what the calendar costs", _calendar_price, needs=("exercise 3", "exercise 4", "exercise 6"))
 
 # %% [markdown]
 # ## 10. Exercise 7 — `fleet_cost_matrix()`
@@ -1308,6 +1362,11 @@ def _check_best_schedule() -> None:
 _try("exercise 9", _check_best_schedule)
 
 # %%
+# The schedules below are built from YOUR cost matrix, which is built from YOUR
+# slot_costs, which prices with YOUR expected_cost_at.
+_FOR_SCHEDULES = ("exercise 3", "exercise 6", "exercise 7", "exercise 8", "exercise 9")
+
+
 def _price_the_workshop() -> None:
     matrix = fleet_cost_matrix([fu.forecast for fu in FLEET], SLOTS, SCENARIO)
     free = sum(best_intervention_time(fu.forecast, CANDIDATES, SCENARIO).cost for fu in FLEET)
@@ -1337,7 +1396,7 @@ def _price_the_workshop() -> None:
           f"first-come-first-served plan looks locally sensible at every step.")
 
 
-_try("what the workshop costs", _price_the_workshop)
+_try("what the workshop costs", _price_the_workshop, needs=_FOR_SCHEDULES + ("exercise 4",))
 
 # %%
 def _plot_schedules() -> None:
@@ -1360,7 +1419,7 @@ def _plot_schedules() -> None:
     print("plotted: where the two schedules disagree, and what the disagreement costs")
 
 
-_try("schedule plot", _plot_schedules)
+_try("schedule plot", _plot_schedules, needs=_FOR_SCHEDULES)
 
 # %% [markdown]
 # ## 13. Common mistakes
@@ -1413,7 +1472,7 @@ def _price_the_rules_of_thumb() -> None:
           "\nThe prices are known. Use them.")
 
 
-_try("rules of thumb, priced", _price_the_rules_of_thumb)
+_try("rules of thumb, priced", _price_the_rules_of_thumb, needs=_FOR_PLAN)
 
 # %% [markdown]
 # ## 14. Self-check
@@ -1487,7 +1546,7 @@ def _handover() -> None:
           "are\n  changes to the decision, not to the model.")
 
 
-_try("handover note", _handover)
+_try("handover note", _handover, needs=_FOR_PLAN + _FOR_SCHEDULES)
 
 # %% [markdown]
 # ## What you built, and where it goes next
@@ -1511,21 +1570,48 @@ _try("handover note", _handover)
 # somebody hands you a date, ask what the next-best date would have cost.**
 
 # %%
+_MARKS = {"passed": "✅", "failed": "❌", "not started": "⏳"}
+
+
+def _progress_board() -> None:
+    """One line per exercise, from the latest run of its check, then the tally."""
+    width = max(len(", ".join(funcs)) for funcs in _EXERCISES.values())
+    print("progress board")
+    for label, funcs in _EXERCISES.items():
+        state = _STATUS.get(label, "not started")
+        print(f"  {_MARKS[state]} {label:<12} {', '.join(funcs):<{width}}  {state}")
+    done = sum(_STATUS.get(label) == "passed" for label in _EXERCISES)
+    print(f"\n{done} of {len(_EXERCISES)} exercises complete")
+    failing = [label for label in _EXERCISES if _STATUS.get(label) == "failed"]
+    if failing:
+        print("failing right now: " + ", ".join(failing) + ". Each one printed what went "
+              "wrong in its own cell above, and every exercise has hints you can open.")
+    elif done < len(_EXERCISES):
+        print("work top to bottom: every exercise has hints you can open above its code.")
+
+
+# Your progress board. Every check is re-run here, quietly, against your code as it stands
+# now — each one already printed its feedback in its own cell above — so the board is
+# current even if you edited an exercise and did not re-run its check.
 if __name__ == "__main__":
-    for _name, _check in (("exercise 1", _check_forecast_summary),
-                          ("exercise 2", _check_survival_and_hazard),
-                          ("exercise 3", _check_expected_cost_at),
-                          ("exercise 4", _check_best_intervention_time),
-                          ("exercise 5", _check_realised_cost),
-                          ("exercise 6", _check_slot_costs),
-                          ("exercise 7", _check_fleet_cost_matrix),
-                          ("exercise 8", _check_greedy_schedule),
-                          ("exercise 9", _check_best_schedule)):
-        _try(_name, _check)
+    with contextlib.redirect_stdout(io.StringIO()):
+        for _name, _check in (("exercise 1", _check_forecast_summary),
+                              ("exercise 2", _check_survival_and_hazard),
+                              ("exercise 3", _check_expected_cost_at),
+                              ("exercise 4", _check_best_intervention_time),
+                              ("exercise 5", _check_realised_cost),
+                              ("exercise 6", _check_slot_costs),
+                              ("exercise 7", _check_fleet_cost_matrix),
+                              ("exercise 8", _check_greedy_schedule),
+                              ("exercise 9", _check_best_schedule)):
+            _try(_name, _check)
+    _progress_board()
     print(f"\nnotebook wall time so far: {time.perf_counter() - _LESSON_T0:.1f}s")
     # A stub you have not reached yet is not a failure. A check that ran and came back wrong
-    # is, and it ends this run non-zero rather than letting a green exit code paper over it.
-    if _FAILED_CHECKS:
+    # is: in a script or under CI it ends this run non-zero, rather than letting a green exit
+    # code paper over it. Inside a notebook kernel the board above has already said so, in a
+    # line rather than a traceback at the foot of the page.
+    if _FAILED_CHECKS and "ipykernel" not in sys.modules:
         raise SystemExit("checks failed: " + ", ".join(dict.fromkeys(_FAILED_CHECKS)))
 
 # %% [markdown]

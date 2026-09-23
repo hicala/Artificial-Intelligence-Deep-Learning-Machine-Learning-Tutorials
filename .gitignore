@@ -1,64 +1,44 @@
-# Byte-compiled / optimized / DLL files
+# generated, never hand-committed
+dist
+.ipynb_checkpoints/
+# lesson.ipynb IS committed. It is generated from lesson.py by tools/notebooks.py, but it is
+# also the artefact a student actually opens -- in Colab, Kaggle, Binder or local Jupyter --
+# and a repository of notebooks that ships no notebooks helps nobody. `notebooks.py --check`
+# fails the build if a committed .ipynb has drifted from the lesson.py it came from.
 __pycache__/
-*.py[cod]
-
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-env/
+*.pyc
+# build products of the C/C++ lessons
+*.o
+*.dSYM/
+lesson_bin
+solutions/lesson_bin
+# per-lesson build directories: binaries and generated test data. tools/execute.py deletes
+# them before every run because a stale binary can point at a dead library path. 8.5 MiB of
+# them (two Mach-O executables, six generated CSVs) were once committed by a `git add -A`.
 build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.coverage
-.cache
-nosetests.xml
-coverage.xml
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-# IPython notebook
-.ipynb_checkpoints
-
-# Repo scratch directory
-scratch/
+# environment
+.venv
 .DS_Store
-deep-learning/.DS_Store
-.DS_Store
-deep-learning/.DS_Store
+# iCloud Drive sync duplicates. This tree lives under ~/Documents, which iCloud syncs, and a
+# build running while it syncs leaves copies named "lesson_bin 2", "assets 3" and so on. They
+# are never wanted: the build products are ignored above and the asset directories are real.
+lesson_bin [0-9]*
+assets [0-9]*
+build [0-9]*/
+*.o [0-9]*
+# ...and duplicates of source files ("lesson 2.py", "README 2.md"), which `git add -A` would
+# otherwise commit. Scoped to the curriculum, because archive/ tracks real names like
+# "ex4data1 2.mat".
+/lessons/**/* [0-9].*
+/programmes/**/* [0-9].*
+/flagships/**/* [0-9].*
+/tools/**/* [0-9].*
+/* [0-9].*
+# NOTE: solutions/ and tests/ are deliberately NOT ignored. They are version-controlled and
+# excluded from the student bundle by tools/build_student_bundle.py (QUALITY.md gate 7).
+
+# MuJoCo writes this beside whatever ran it when a simulation goes unstable
+MUJOCO_LOG.TXT
+
+# written beside the lesson each time F15-L03's solution runs
+tracking_error_curve.png

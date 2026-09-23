@@ -5,6 +5,9 @@
 //
 //     make SRC=solutions/lesson.c BIN=solutions/lesson_bin test
 
+/* clock_gettime and CLOCK_MONOTONIC are POSIX, not ISO C. Under -std=c11, glibc (Linux)
+   hides them unless asked before the first header; macOS shows them regardless. */
+#define _DEFAULT_SOURCE
 #include <mujoco/mujoco.h>
 
 #include <math.h>
